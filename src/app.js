@@ -4,6 +4,7 @@ const STOCKFISH_SCRIPT =
   new URL("../vendor/stockfish/stockfish.wasm.js", import.meta.url);
 const STOCKFISH_FALLBACK_SCRIPT =
   new URL("../vendor/stockfish/stockfish.js", import.meta.url);
+const OCR_WHITELIST = "0123456789abcdefghKQRBNOPxXOolI-=+#. ";
 
 const SAMPLE_MOVES = `1. d4 c6 2. Nf3 d5 3. e3 e6 4. Bd3 c5 5. dxc5 Bxc5 6. Nbd2 Nc6 7. c3 Nge7 8. O-O Bd7 9. e4 O-O 10. exd5 Nxd5 11. Re1 Nf4 12. Bb1 Qg5 13. g3 Nh3+ 14. Kg2 Qh5 15. Qc2 Bxf2 16. Rf1 Be3 17. Ne4 Bxc1 18. Qxc1 Ne7 19. Nf2 Nxf2 20. Rxf2 Bc6 21. Kg1 Bxf3 22. Qe3 Bc6 23. Bd3 Rae8 24. Be2 Qd5 25. Bf3 Qb5 26. Qxa7 Bxf3 27. Rxf3 Qxb2 28. Raf1 Nd5 29. Qd4 Rc8 30. c4 Nf6 31. a4 Qxd4+`;
 
@@ -136,38 +137,48 @@ async function runOcr() {
   setProgress(4);
 
   try {
-    const imageForOcr = await preprocessImage(state.imageFile);
-    const logger = (message) => {
-      if (message.status === "recognizing text" && message.progress) {
-        setProgress(10 + Math.round(message.progress * 70));
-        setLog(`OCR recognizing text: ${Math.round(message.progress * 100)}%`);
-      } else if (message.status) {
-        setLog(`OCR ${message.status}`);
-      }
-    };
+    const sources = await buildOcrSources(state.imageFile);
+    const results = [];
 
-    let text = "";
     if (window.Tesseract?.createWorker) {
-      const worker = await window.Tesseract.createWorker("eng", 1, { logger });
-      await worker.setParameters({
-        preserve_interword_spaces: "1",
-        tessedit_pageseg_mode: "6",
-        tessedit_char_whitelist:
-          "0123456789abcdefghKQRBNOPxXO-=+#. ",
+      const worker = await window.Tesseract.createWorker("eng", 1, {
+        logger: (message) => {
+          if (message.status && !message.status.includes("recognizing")) {
+            setLog(`OCR ${message.status}`);
+          }
+        },
       });
-      const result = await worker.recognize(imageForOcr);
-      text = result.data.text || "";
+
+      for (let index = 0; index < sources.length; index += 1) {
+        const source = sources[index];
+        const passStart = 10 + Math.round((index / sources.length) * 78);
+        const passSize = Math.round(78 / sources.length);
+        setLog(`OCR pass ${index + 1}/${sources.length}: ${source.name}`);
+        await worker.setParameters(ocrParameters(source.psm));
+        const result = await worker.recognize(source.image);
+        const scored = scoreOcrText(result.data.text || "", source.name);
+        results.push(scored);
+        setProgress(passStart + passSize);
+      }
+
       await worker.terminate();
     } else if (window.Tesseract?.recognize) {
-      const result = await window.Tesseract.recognize(imageForOcr, "eng", { logger });
-      text = result.data.text || "";
+      const result = await window.Tesseract.recognize(state.imageFile, "eng", {
+        logger: (message) => {
+          if (message.status === "recognizing text" && message.progress) {
+            setProgress(10 + Math.round(message.progress * 78));
+          }
+        },
+      });
+      results.push(scoreOcrText(result.data.text || "", "Original"));
     } else {
       throw new Error("Tesseract.js did not load.");
     }
 
-    els.pgnText.value = cleanMoveText(text);
+    const best = pickBestOcrResult(results);
+    els.pgnText.value = best.cleaned;
     setProgress(100);
-    setLog("OCR complete. Review the move text, then analyze.");
+    setLog(`OCR complete using ${best.source}. Parsed ${best.parsed.moves.length} legal moves.`);
     parseCurrentText();
   } catch (error) {
     setLog(`OCR failed: ${error.message}`);
@@ -176,31 +187,94 @@ async function runOcr() {
   }
 }
 
-async function preprocessImage(file) {
+function ocrParameters(psm) {
+  return {
+    preserve_interword_spaces: "1",
+    tessedit_pageseg_mode: String(psm),
+    tessedit_char_whitelist: OCR_WHITELIST,
+    user_defined_dpi: "300",
+  };
+}
+
+async function buildOcrSources(file) {
+  return [
+    { name: "original screenshot", image: file, psm: 6 },
+    { name: "high contrast text", image: await preprocessImage(file, "binary"), psm: 6 },
+    { name: "soft contrast text", image: await preprocessImage(file, "grayscale"), psm: 6 },
+  ];
+}
+
+function scoreOcrText(text, source) {
+  const cleaned = cleanMoveText(text);
+  const parsed = parseMoves(cleaned);
+  const moveNumberCount = (cleaned.match(/\b\d{1,3}\s*\./g) || []).length;
+  const tokenCount = tokenizeMoves(cleaned).length;
+  const skippedCount = parsed.errors.length;
+  const score = parsed.moves.length * 20 + moveNumberCount * 3 - skippedCount * 6 - Math.max(0, tokenCount - parsed.moves.length - skippedCount);
+
+  return {
+    source,
+    text,
+    cleaned,
+    parsed,
+    score,
+  };
+}
+
+function pickBestOcrResult(results) {
+  if (!results.length) {
+    throw new Error("No OCR result was produced.");
+  }
+
+  return [...results].sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.parsed.moves.length !== a.parsed.moves.length) return b.parsed.moves.length - a.parsed.moves.length;
+    return a.cleaned.length - b.cleaned.length;
+  })[0];
+}
+
+async function preprocessImage(file, mode) {
   const bitmap = await createImageBitmap(file);
-  const maxWidth = 1800;
-  const scale = Math.min(1, maxWidth / bitmap.width);
+  const targetWidth = 2400;
+  const scale = Math.min(2.6, Math.max(1, targetWidth / bitmap.width));
   const width = Math.round(bitmap.width * scale);
   const height = Math.round(bitmap.height * scale);
   const canvas = els.canvas;
   canvas.width = width;
   canvas.height = height;
   const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
 
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, width, height);
   context.drawImage(bitmap, 0, 0, width, height);
 
   const data = context.getImageData(0, 0, width, height);
+  const stats = imageLuminosityStats(data, width, height);
+  const darkBackground = stats.borderAverage < 128;
+  const threshold = darkBackground
+    ? Math.max(stats.borderAverage + 24, stats.otsu - 18)
+    : Math.min(stats.borderAverage - 24, stats.otsu + 18);
+
   for (let index = 0; index < data.data.length; index += 4) {
     const r = data.data[index];
     const g = data.data[index + 1];
     const b = data.data[index + 2];
     const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-    const boosted = gray > 145 ? 255 : Math.max(0, gray - 28);
-    data.data[index] = boosted;
-    data.data[index + 1] = boosted;
-    data.data[index + 2] = boosted;
+    let output;
+
+    if (mode === "binary") {
+      const foreground = darkBackground ? gray >= threshold : gray <= threshold;
+      output = foreground ? 0 : 255;
+    } else {
+      output = normalizeTextPixel(gray, stats, darkBackground);
+    }
+
+    data.data[index] = output;
+    data.data[index + 1] = output;
+    data.data[index + 2] = output;
+    data.data[index + 3] = 255;
   }
   context.putImageData(data, 0, 0);
 
@@ -210,6 +284,90 @@ async function preprocessImage(file) {
       else reject(new Error("Could not prepare image for OCR."));
     }, "image/png");
   });
+}
+
+function imageLuminosityStats(imageData, width, height) {
+  const histogram = new Array(256).fill(0);
+  let borderTotal = 0;
+  let borderCount = 0;
+  const borderSize = Math.max(1, Math.floor(Math.min(width, height) * 0.04));
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const gray = Math.round(
+        0.299 * imageData.data[offset] +
+        0.587 * imageData.data[offset + 1] +
+        0.114 * imageData.data[offset + 2]
+      );
+      histogram[gray] += 1;
+
+      if (x < borderSize || x >= width - borderSize || y < borderSize || y >= height - borderSize) {
+        borderTotal += gray;
+        borderCount += 1;
+      }
+    }
+  }
+
+  return {
+    borderAverage: borderTotal / Math.max(1, borderCount),
+    otsu: otsuThreshold(histogram, width * height),
+    p05: histogramPercentile(histogram, 0.05),
+    p95: histogramPercentile(histogram, 0.95),
+  };
+}
+
+function otsuThreshold(histogram, total) {
+  let sum = 0;
+  for (let value = 0; value < histogram.length; value += 1) {
+    sum += value * histogram[value];
+  }
+
+  let sumBackground = 0;
+  let weightBackground = 0;
+  let bestVariance = 0;
+  let threshold = 128;
+
+  for (let value = 0; value < histogram.length; value += 1) {
+    weightBackground += histogram[value];
+    if (weightBackground === 0) continue;
+
+    const weightForeground = total - weightBackground;
+    if (weightForeground === 0) break;
+
+    sumBackground += value * histogram[value];
+    const meanBackground = sumBackground / weightBackground;
+    const meanForeground = (sum - sumBackground) / weightForeground;
+    const variance = weightBackground * weightForeground * (meanBackground - meanForeground) ** 2;
+
+    if (variance > bestVariance) {
+      bestVariance = variance;
+      threshold = value;
+    }
+  }
+
+  return threshold;
+}
+
+function histogramPercentile(histogram, percentile) {
+  const target = histogram.reduce((total, count) => total + count, 0) * percentile;
+  let running = 0;
+
+  for (let value = 0; value < histogram.length; value += 1) {
+    running += histogram[value];
+    if (running >= target) return value;
+  }
+
+  return histogram.length - 1;
+}
+
+function normalizeTextPixel(gray, stats, darkBackground) {
+  const low = stats.p05;
+  const high = Math.max(stats.p95, low + 1);
+  const normalized = clamp((gray - low) / (high - low), 0, 1);
+  const ink = darkBackground ? 1 - normalized : normalized;
+  const boosted = ink < 0.5 ? ink * 0.62 : 1 - (1 - ink) * 0.42;
+  return Math.round(clamp(boosted, 0, 1) * 255);
 }
 
 function parseCurrentText() {

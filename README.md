@@ -5,7 +5,7 @@ Static browser app that turns a screenshot of chess notation into a step-by-step
 ## What It Does
 
 - Upload a screenshot of a move list.
-- Run in-browser OCR with Tesseract.js.
+- Run in-browser OCR with Tesseract.js, using original and enhanced image passes.
 - Edit the extracted move text before analysis.
 - Parse legal SAN moves with chess.js.
 - Analyze each position in a Stockfish WASM worker.
@@ -40,6 +40,6 @@ The page is static. It loads OCR and move parsing libraries from public CDNs, an
 
 ## Notes
 
-OCR is intentionally editable before analysis. Chess notation is compact, and screenshots often produce small mistakes like `0-0` versus `O-O`, `Qxcl` versus `Qxc1`, or missing check symbols.
+OCR is intentionally editable before analysis. Chess notation is compact, and screenshots often produce small mistakes like `0-0` versus `O-O`, `Qxcl` versus `Qxc1`, or missing check symbols. The app tries multiple OCR passes and keeps the transcript that parses into the most legal moves.
 
 Depth 8-10 is a practical browser default. Higher depth is more accurate, but it can be slow on laptops and mobile browsers.
