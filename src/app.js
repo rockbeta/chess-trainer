@@ -125,6 +125,11 @@ function wireEvents() {
     parseCurrentText();
   });
 
+  els.ocrEngineSelect.addEventListener("change", () => {
+    clearParseErrors();
+    setLog(`OCR engine set to ${selectedOcrEngineLabel()}. Run OCR to retry this image.`);
+  });
+
   els.depthInput.addEventListener("input", () => {
     els.depthValue.value = els.depthInput.value;
   });
@@ -148,6 +153,7 @@ function onImageSelected(event) {
 
   els.imagePreview.src = URL.createObjectURL(state.imageFile);
   els.previewWrap.classList.add("has-image");
+  clearParseErrors();
   setLog("Image ready. Run OCR when you want to extract the moves.");
 }
 
@@ -155,6 +161,7 @@ async function runOcr() {
   if (!state.imageFile) return;
   setBusy(true, "OCR running");
   setProgress(4);
+  beginOcrRun();
 
   try {
     const results = [];
@@ -177,8 +184,8 @@ async function runOcr() {
     const best = pickBestOcrResult(results);
     els.pgnText.value = shouldUseCanonicalTranscript(best) ? formatParsedMoves(best.parsed.moves) : best.cleaned;
     setProgress(100);
-    setLog(`OCR complete using ${best.source}. Parsed ${best.parsed.moves.length} legal moves.`);
-    parseCurrentText();
+    parseCurrentText({ updateLog: false });
+    setLog(ocrSummary(best, results));
   } catch (error) {
     setLog(`OCR failed: ${error.message}`);
   } finally {
@@ -368,6 +375,31 @@ function formatParsedMoves(moves) {
   return pairs.join(" ");
 }
 
+function selectedOcrEngineLabel() {
+  return els.ocrEngineSelect.selectedOptions[0]?.textContent || "selected engine";
+}
+
+function beginOcrRun() {
+  state.errors = [];
+  state.analysis.clear();
+  clearParseErrors();
+  renderAnalysis();
+  setLog(`Running OCR with ${selectedOcrEngineLabel()}.`);
+}
+
+function clearParseErrors() {
+  els.parseErrors.hidden = true;
+  els.parseErrors.textContent = "";
+}
+
+function ocrSummary(best, results) {
+  const skipped = best.parsed.errors.length;
+  const expected = best.expectedPlies ? ` of about ${best.expectedPlies}` : "";
+  const alternateCount = Math.max(0, results.length - 1);
+  const fallback = alternateCount ? ` Compared ${results.length} OCR result${results.length === 1 ? "" : "s"}.` : "";
+  return `OCR complete using ${best.source}. Parsed ${best.parsed.moves.length}${expected} legal moves; skipped ${skipped} token${skipped === 1 ? "" : "s"}.${fallback}`;
+}
+
 async function preprocessImage(file, mode) {
   const bitmap = await createImageBitmap(file);
   const targetWidth = 2400;
@@ -505,7 +537,7 @@ function normalizeTextPixel(gray, stats, darkBackground) {
   return Math.round(clamp(boosted, 0, 1) * 255);
 }
 
-function parseCurrentText() {
+function parseCurrentText({ updateLog = true } = {}) {
   const result = parseMoves(els.pgnText.value);
   state.moves = result.moves;
   state.errors = result.errors;
@@ -516,10 +548,12 @@ function parseCurrentText() {
   goToPly(state.currentPly);
   renderParseErrors();
 
-  if (state.moves.length) {
-    setLog(`Parsed ${state.moves.length} moves. Ready to analyze.`);
-  } else {
-    setLog("No legal moves parsed yet.");
+  if (updateLog) {
+    if (state.moves.length) {
+      setLog(`Parsed ${state.moves.length} moves. Ready to analyze.`);
+    } else {
+      setLog("No legal moves parsed yet.");
+    }
   }
 
   return result;
@@ -1145,8 +1179,7 @@ function renderAnalysis() {
 
 function renderParseErrors() {
   if (!state.errors.length) {
-    els.parseErrors.hidden = true;
-    els.parseErrors.textContent = "";
+    clearParseErrors();
     return;
   }
 
@@ -1168,6 +1201,7 @@ function setBusy(isBusy, label = "") {
   els.analyzeButton.disabled = isBusy;
   els.parseButton.disabled = isBusy;
   els.sampleButton.disabled = isBusy;
+  els.ocrEngineSelect.disabled = isBusy;
   if (label) setEngineStatus(label, isBusy);
 }
 
