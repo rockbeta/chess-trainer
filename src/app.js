@@ -22,6 +22,50 @@ const OCR_CONFUSIONS = new Map([
   ["B", "8"],
   ["G", "6"],
   ["q", "g"],
+  ["D", "0"],
+  ["t", "1"],
+  ["T", "7"],
+  ["J", "1"],
+  ["j", "1"],
+  ["i", "1"],
+  ["Q", "9"],
+  ["g", "9"],
+  ["b", "6"],
+  ["E", "6"],
+  ["C", "6"],
+]);
+
+// Maps OCR-confused digits back to chess piece letters (KQRBN).
+const DIGIT_TO_PIECE = new Map([
+  ["8", "B"],
+  ["6", "G"],
+  ["9", "Q"],
+  ["1", "I"],
+  ["5", "S"],
+  ["2", "Z"],
+]);
+
+// Common swaps where a piece letter is misread as a digit or vice versa.
+const PIECE_DIGIT_SWAPS = new Map([
+  ["B", "8"],
+  ["8", "B"],
+  ["N", "N"],
+  ["R", "R"],
+  ["K", "K"],
+  ["Q", "Q"],
+  ["S", "5"],
+  ["5", "S"],
+  ["G", "6"],
+  ["6", "G"],
+  ["I", "1"],
+  ["1", "I"],
+  ["Z", "2"],
+  ["2", "Z"],
+  ["A", "4"],
+  ["4", "A"],
+  ["O", "0"],
+  ["0", "O"],
+  ["D", "0"],
 ]);
 
 const SAMPLE_MOVES = `1. d4 c6 2. Nf3 d5 3. e3 e6 4. Bd3 c5 5. dxc5 Bxc5 6. Nbd2 Nc6 7. c3 Nge7 8. O-O Bd7 9. e4 O-O 10. exd5 Nxd5 11. Re1 Nf4 12. Bb1 Qg5 13. g3 Nh3+ 14. Kg2 Qh5 15. Qc2 Bxf2 16. Rf1 Be3 17. Ne4 Bxc1 18. Qxc1 Ne7 19. Nf2 Nxf2 20. Rxf2 Bc6 21. Kg1 Bxf3 22. Qe3 Bc6 23. Bd3 Rae8 24. Be2 Qd5 25. Bf3 Qb5 26. Qxa7 Bxf3 27. Rxf3 Qxb2 28. Raf1 Nd5 29. Qd4 Rc8 30. c4 Nf6 31. a4 Qxd4+`;
@@ -250,13 +294,30 @@ async function runPaddleOcr(file) {
     });
   }
 
-  setLog("Running PaddleOCR neural recognition.");
-  const [result] = await state.paddleOcr.predict(file, {
-    textDetLimitSideLen: 1600,
-    textRecScoreThresh: 0.2,
-  });
-  const text = orderOcrItems(result?.items || []).map((item) => item.text).join(" ");
-  return scoreOcrText(text, "PaddleOCR neural");
+  const predictOpts = {
+    textDetLimitSideLen: 2048,
+    textRecScoreThresh: 0.3,
+  };
+
+  // Run on original image.
+  setLog("Running PaddleOCR on original image.");
+  const [origResult] = await state.paddleOcr.predict(file, predictOpts);
+  const origText = orderOcrItems(origResult?.items || []).map((item) => item.text).join(" ");
+  const origScored = scoreOcrText(origText, "PaddleOCR neural");
+
+  // Also run on a high-contrast preprocessed version for chess.com's multi-color text.
+  try {
+    setLog("Running PaddleOCR on enhanced image.");
+    const enhanced = await preprocessImage(file, "chesscom");
+    const [enhResult] = await state.paddleOcr.predict(enhanced, predictOpts);
+    const enhText = orderOcrItems(enhResult?.items || []).map((item) => item.text).join(" ");
+    const enhScored = scoreOcrText(enhText, "PaddleOCR neural (enhanced)");
+
+    return enhScored.score > origScored.score ? enhScored : origScored;
+  } catch {
+    // If preprocessing fails, fall back to original result.
+    return origScored;
+  }
 }
 
 function orderOcrItems(items) {
@@ -308,6 +369,7 @@ async function buildOcrSources(file) {
     { name: "original screenshot", image: file, psm: 6, whitelist: true },
     { name: "original screenshot, open alphabet", image: file, psm: 6, whitelist: false },
     { name: "high contrast text", image: await preprocessImage(file, "binary"), psm: 6, whitelist: true },
+    { name: "chess.com optimized", image: await preprocessImage(file, "chesscom"), psm: 6, whitelist: true },
     { name: "soft contrast text", image: await preprocessImage(file, "grayscale"), psm: 6, whitelist: true },
   ];
 }
@@ -424,6 +486,12 @@ async function preprocessImage(file, mode) {
     ? Math.max(stats.borderAverage + 24, stats.otsu - 18)
     : Math.min(stats.borderAverage - 24, stats.otsu + 18);
 
+  // Chess.com-specific threshold: very low to catch even the dimmest gray text.
+  // Chess.com move lists have bright white, medium white, and gray text on a dark bg.
+  const chesscomThreshold = darkBackground
+    ? Math.max(stats.borderAverage + 12, stats.p05 + 20)
+    : Math.min(stats.borderAverage - 12, stats.p95 - 20);
+
   for (let index = 0; index < data.data.length; index += 4) {
     const r = data.data[index];
     const g = data.data[index + 1];
@@ -431,7 +499,11 @@ async function preprocessImage(file, mode) {
     const gray = 0.299 * r + 0.587 * g + 0.114 * b;
     let output;
 
-    if (mode === "binary") {
+    if (mode === "chesscom") {
+      // Ultra-aggressive: any pixel above the dark background becomes foreground.
+      const foreground = darkBackground ? gray >= chesscomThreshold : gray <= chesscomThreshold;
+      output = foreground ? 0 : 255;
+    } else if (mode === "binary") {
       const foreground = darkBackground ? gray >= threshold : gray <= threshold;
       output = foreground ? 0 : 255;
     } else {
@@ -613,31 +685,74 @@ function parseMoves(rawText) {
 function cleanMoveText(input) {
   return input
     .normalize("NFKC")
+    // Normalize Unicode punctuation and lookalikes.
     .replace(/[|]/g, "I")
-    .replace(/[×]/g, "x")
-    .replace(/[–—−]/g, "-")
+    .replace(/[×✕✖]/g, "x")
+    .replace(/[–—−‐‑]/g, "-")
+    .replace(/[''`´]/g, "'")
+    .replace(/[""„]/g, '"')
+    .replace(/[□■▪▫◻◼⬜⬛[\]【】]/g, " ")
+    // Fix merged move-number + move: "19Na4" → "19. Na4", "3Nc3" → "3. Nc3"
+    .replace(/\b(\d{1,3})([KQRBNOP][a-h])/g, "$1. $2")
+    .replace(/\b(\d{1,3})([a-h][x1-8])/g, "$1. $2")
+    // Normalize castling — generous pattern matching.
     .replace(/[o0]\s*-\s*[o0]\s*-\s*[o0]/gi, "O-O-O")
     .replace(/[o0]\s*-\s*[o0]/gi, "O-O")
     .replace(/\bOOO\b/gi, "O-O-O")
     .replace(/\bOO\b/gi, "O-O")
+    .replace(/\b0-0-0\b/g, "O-O-O")
+    .replace(/\b0-0\b/g, "O-O")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 function tokenizeMoves(text) {
-  return text
+  const raw = text
     .replace(/\[[^\]]*]/g, " ")
     .replace(/\{[^}]*}/g, " ")
     .replace(/\([^)]*\)/g, " ")
     .replace(/\$\d+/g, " ")
     .replace(/\d+\s*\.\s*\.\./g, " ")
-    .replace(/\b\d+\s*[.,:]\s*/g, " ")
+    .replace(/\b\d+\s*[.,:]?\s*/g, " ")
     .replace(/\b(?:1-0|0-1|1\/2-1\/2|\*)\b/g, " ")
     .split(/\s+/)
     .map((token) => token.trim())
     .filter(Boolean)
     .filter((token) => !/^[+#=.,:;-]+$/.test(token))
-    .filter((token) => !/^(?:Options|Explore|Back|Forward)$/i.test(token));
+    .filter((token) => !/^(?:Options|Explore|Back|Forward|Review|Analysis|Accuracy|Game|New|Retry|Share)$/i.test(token));
+
+  // Split merged tokens: e.g. "Na4b3" → ["Na4", "b3"], "cxb6axb6" → ["cxb6", "axb6"]
+  const split = [];
+  for (const token of raw) {
+    const parts = splitMergedMoves(token);
+    split.push(...parts);
+  }
+
+  return split;
+}
+
+/**
+ * Detects and splits a token that looks like two chess moves merged together.
+ * Common chess.com OCR artifact when spacing is tight.
+ * Examples: "Na4b3" → ["Na4","b3"], "Bxg6Qxg6" → ["Bxg6","Qxg6"],
+ *           "cxb6axb6" → ["cxb6","axb6"], "Rfc8+Bxe2" → ["Rfc8+","Bxe2"]
+ */
+function splitMergedMoves(token) {
+  // Don't split short tokens or castling.
+  if (token.length <= 4 || /^O-O/i.test(token)) return [token];
+
+  // Pattern: after a valid-looking move-end (file+rank, optionally +/#),
+  // if another move starts (piece letter or pawn file), split there.
+  const splitPattern = /^((?:[KQRBN]?[a-h]?x?[a-h][1-8](?:=[QRBN])?[+#]?)|(?:O-O(?:-O)?[+#]?))([KQRBNa-h].+)$/;
+  const match = token.match(splitPattern);
+  if (match) {
+    const first = match[1];
+    const rest = match[2];
+    // Recursively split the rest in case of triple merge.
+    return [first, ...splitMergedMoves(rest)];
+  }
+
+  return [token];
 }
 
 function resolveMoveToken(chess, token) {
@@ -672,19 +787,43 @@ function repairMoveToken(token) {
     .replace(/[^a-zA-Z0-9xX=+#\-]/g, "")
     .replace(/[,:;]+$/g, "");
 
+  // Castling normalization.
   if (/^[o0][- ]?[o0]([- ]?[o0])?[+#]?$/i.test(repaired)) {
     const suffix = repaired.endsWith("+") || repaired.endsWith("#") ? repaired.slice(-1) : "";
     const core = repaired.replace(/[+#]/g, "").replace(/[o0]/gi, "O").replace(/\s+/g, "-");
     return core.length > 3 ? `O-O-O${suffix}` : `O-O${suffix}`;
   }
 
+  // Remove doubled piece-prefix OCR stutter: "NNa4" → "Na4", "BBxg6" → "Bxg6".
+  repaired = repaired.replace(/^([KQRBN])\1+/, "$1");
+
+  // Remove spurious dashes inside moves: "Na-4" → "Na4", "Bx-g6" → "Bxg6".
+  repaired = repaired.replace(/^([KQRBN]?[a-h]?x?)[-]([a-h][1-8])/, "$1$2");
+
+  // Fix digit/file swap: "N4a" → "Na4" (OCR swapped position of file and rank).
+  repaired = repaired.replace(/^([KQRBN])([1-8])([a-h])([+#]?)$/, "$1$3$2$4");
+
+  // Fix "I"/"l" as rank 1 in all move patterns.
   repaired = repaired.replace(/([a-h])([Il])([+#]?)$/g, "$11$3");
   repaired = repaired.replace(/([KQRBN])([a-h])([Il])([+#]?)$/g, "$1$21$4");
   repaired = repaired.replace(/([a-h])x([a-h])([Il])([+#]?)$/g, "$1x$21$4");
   repaired = repaired.replace(/([KQRBN])x([a-h])([Il])([+#]?)$/g, "$1x$21$4");
+
+  // Fix trailing "O" misread as "0" after a file letter: "a0" → valid? only if no "aO" move.
   repaired = repaired.replace(/([a-h])O([+#]?)$/g, "$10$2");
-  repaired = repaired.replace(/x([a-h])([AIlS])([+#]?)$/g, (_match, file, rank, suffix) => `x${file}${ocrRank(rank)}${suffix}`);
-  repaired = repaired.replace(/([a-h])([AIlS])([+#]?)$/g, (_match, file, rank, suffix) => `${file}${ocrRank(rank)}${suffix}`);
+
+  // Expanded rank confusion: handle all commonly confused characters in rank position.
+  repaired = repaired.replace(/x([a-h])([AIlSGEDTtJj])([+#]?)$/g, (_match, file, rank, suffix) => `x${file}${ocrRank(rank)}${suffix}`);
+  repaired = repaired.replace(/([a-h])([AIlSGEDTtJj])([+#]?)$/g, (_match, file, rank, suffix) => `${file}${ocrRank(rank)}${suffix}`);
+
+  // Fix leading digit that should be a piece letter: "8xg6" → "Bxg6".
+  repaired = repaired.replace(/^([0-9])(x?[a-h][1-8])([+#]?)$/, (_match, digit, rest, suffix) => {
+    const piece = DIGIT_TO_PIECE.get(digit);
+    return piece ? `${piece}${rest}${suffix}` : `${digit}${rest}${suffix}`;
+  });
+
+  // Fix trailing garbage after a valid-looking move.
+  repaired = repaired.replace(/^([KQRBN]?[a-h]?x?[a-h][1-8](?:=[QRBN])?[+#]?)[a-zA-Z]{2,}$/, "$1");
 
   return repaired;
 }
@@ -703,6 +842,33 @@ function buildMoveCandidates(token) {
 
   if (!/[QRBN]=/.test(token) && /=/.test(token) === false && /[a-h][18][QRBN]?$/.test(token)) {
     candidates.add(token.replace(/([a-h][18])([QRBN])$/, "$1=$2"));
+  }
+
+  // Try swapping leading character with piece-letter if it looks like a digit confusion.
+  // e.g., "8xg6" → "Bxg6", "6f3" → "Gf3" (not valid, but covered by fuzzy).
+  if (/^[0-9]/.test(token)) {
+    const piece = DIGIT_TO_PIECE.get(token[0]);
+    if (piece) candidates.add(piece + token.slice(1));
+  }
+
+  // Try all KQRBN if the first character is wrong — "Hxg6" → "Bxg6", "Nxg6" etc.
+  if (/^[A-Z]/.test(token) && !/^[KQRBN]/.test(token)) {
+    for (const piece of ["K", "Q", "R", "B", "N"]) {
+      candidates.add(piece + token.slice(1));
+    }
+  }
+
+  // Try lowercase piece normalization: "na4" → "Na4", "rfc8" → "Rfc8".
+  if (/^[kqrbn]/.test(token)) {
+    candidates.add(token[0].toUpperCase() + token.slice(1));
+  }
+
+  // Try each character substitution from OCR confusions (single-character swaps).
+  for (let i = 0; i < token.length && i < 6; i++) {
+    const swap = PIECE_DIGIT_SWAPS.get(token[i]);
+    if (swap && swap !== token[i]) {
+      candidates.add(token.slice(0, i) + swap + token.slice(i + 1));
+    }
   }
 
   for (const candidate of [...candidates]) {
@@ -743,8 +909,10 @@ function findClosestLegalMove(token, legalMoves) {
 
   const nextDifferent = scored.find((entry) => entry.move.san !== best.move.san);
   const bestLength = Math.max(2, moveKey(best.move.san).length);
-  const limit = Math.max(0.65, Math.min(1.75, bestLength * 0.24));
-  const clearMargin = !nextDifferent || nextDifferent.distance - best.distance >= 0.28;
+  // Slightly more generous limit so OCR confusions like piece swaps pass through.
+  const limit = Math.max(0.85, Math.min(2.0, bestLength * 0.32));
+  // Accept a match if it's clearly the best, even with a small margin.
+  const clearMargin = !nextDifferent || nextDifferent.distance - best.distance >= 0.18;
 
   if (best.distance <= limit && clearMargin) {
     return best.move;
