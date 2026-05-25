@@ -22,6 +22,33 @@ const PIECES = {
   bp: "\u265F",
 };
 
+const ARROW_STYLES = {
+  played: {
+    className: "played-arrow",
+    markerId: "arrow-head-played",
+    color: "#2454a6",
+    label: "",
+  },
+  alt1: {
+    className: "alt-arrow alt-arrow-1",
+    markerId: "arrow-head-alt-1",
+    color: "#14795c",
+    label: "1",
+  },
+  alt2: {
+    className: "alt-arrow alt-arrow-2",
+    markerId: "arrow-head-alt-2",
+    color: "#8a5a12",
+    label: "2",
+  },
+  alt3: {
+    className: "alt-arrow alt-arrow-3",
+    markerId: "arrow-head-alt-3",
+    color: "#8b3f6d",
+    label: "3",
+  },
+};
+
 const state = {
   imageFile: null,
   moves: [],
@@ -398,7 +425,10 @@ async function analyzeGame() {
         alternatives,
       });
 
-      if (state.currentPly === move.ply) renderAnalysis();
+      if (state.currentPly === move.ply) {
+        renderBoard(chessAtPly(state.currentPly));
+        renderAnalysis();
+      }
       renderMoveList();
     }
 
@@ -432,9 +462,7 @@ function buildAlternatives(move, lines, playedScore) {
     return line.moverScore > playedMoverScore + 0.03;
   });
 
-  const betterKeys = new Set(better.map((line) => line.uci));
-  const fillers = ranked.filter((line) => !betterKeys.has(line.uci));
-  return [...better, ...fillers].slice(0, 3);
+  return better.slice(0, 3);
 }
 
 function scoreForMover(scoreWhite, turn) {
@@ -482,7 +510,7 @@ function renderBoard(chess) {
     }
   }
 
-  els.board.innerHTML = fragments.join("");
+  els.board.innerHTML = `${fragments.join("")}${renderArrowLayer(lastMove)}`;
 
   if (state.currentPly === 0) {
     els.boardCaption.textContent = "Starting position";
@@ -490,6 +518,119 @@ function renderBoard(chess) {
     const move = state.moves[state.currentPly - 1];
     els.boardCaption.textContent = `${move.number}${move.side === "b" ? "..." : "."} ${move.san}`;
   }
+}
+
+function renderArrowLayer(move) {
+  if (!move) return "";
+
+  const analysis = state.analysis.get(move.ply);
+  if (!analysis) return "";
+
+  const arrows = [
+    {
+      from: move.from,
+      to: move.to,
+      text: `${move.san} ${analysis.playedDisplay || "-"}`,
+      style: ARROW_STYLES.played,
+      index: 0,
+    },
+    ...analysis.alternatives.map((line, index) => {
+      const parts = uciParts(line.uci);
+      return {
+        from: parts.from,
+        to: parts.to,
+        text: `${line.san} ${line.displayScore}`,
+        style: ARROW_STYLES[`alt${index + 1}`],
+        index: index + 1,
+      };
+    }),
+  ].filter((arrow) => arrow.from && arrow.to);
+
+  if (!arrows.length) return "";
+
+  const defs = Object.values(ARROW_STYLES)
+    .map(
+      (style) => `
+        <marker id="${style.markerId}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="${style.color}"></path>
+        </marker>
+      `
+    )
+    .join("");
+
+  return `
+    <svg class="arrow-layer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <defs>${defs}</defs>
+      ${arrows.map(renderArrow).join("")}
+    </svg>
+  `;
+}
+
+function renderArrow(arrow) {
+  const from = squareCenter(arrow.from);
+  const to = squareCenter(arrow.to);
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const unitX = dx / length;
+  const unitY = dy / length;
+  const start = {
+    x: from.x + unitX * 3.2,
+    y: from.y + unitY * 3.2,
+  };
+  const end = {
+    x: to.x - unitX * 4.6,
+    y: to.y - unitY * 4.6,
+  };
+  const labelPoint = labelPosition(from, to, arrow.index);
+  const label = arrow.style.label ? `${arrow.style.label} ${arrow.text}` : arrow.text;
+
+  return `
+    <g class="board-arrow ${arrow.style.className}">
+      <line
+        x1="${start.x.toFixed(2)}"
+        y1="${start.y.toFixed(2)}"
+        x2="${end.x.toFixed(2)}"
+        y2="${end.y.toFixed(2)}"
+        marker-end="url(#${arrow.style.markerId})"
+      ></line>
+      <foreignObject
+        class="arrow-label-wrap"
+        x="${labelPoint.x.toFixed(2)}"
+        y="${labelPoint.y.toFixed(2)}"
+        width="38"
+        height="8"
+      >
+        <div xmlns="http://www.w3.org/1999/xhtml" class="arrow-label">${escapeHtml(label)}</div>
+      </foreignObject>
+    </g>
+  `;
+}
+
+function squareCenter(square) {
+  const file = square.charCodeAt(0) - 97;
+  const rank = Number(square[1]);
+  return {
+    x: ((file + 0.5) / 8) * 100,
+    y: ((8 - rank + 0.5) / 8) * 100,
+  };
+}
+
+function labelPosition(from, to, index) {
+  const offsets = [
+    { x: -17, y: -9 },
+    { x: -17, y: 1 },
+    { x: -17, y: 9 },
+    { x: -17, y: -17 },
+  ];
+  const offset = offsets[index] || offsets[0];
+  const x = clamp((from.x + to.x) / 2 + offset.x, 1, 61);
+  const y = clamp((from.y + to.y) / 2 + offset.y, 1, 91);
+  return { x, y };
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function renderMoveList() {
@@ -605,14 +746,23 @@ function moveToUci(move) {
   return `${move.from}${move.to}${move.promotion || ""}`;
 }
 
+function uciParts(uci) {
+  return {
+    from: uci?.slice(0, 2) || "",
+    to: uci?.slice(2, 4) || "",
+    promotion: uci?.slice(4, 5) || "",
+  };
+}
+
 function uciToSan(fen, uci) {
   if (!uci || uci.length < 4) return "";
   try {
     const chess = new Chess(fen);
+    const parts = uciParts(uci);
     const move = chess.move({
-      from: uci.slice(0, 2),
-      to: uci.slice(2, 4),
-      promotion: uci.slice(4, 5) || undefined,
+      from: parts.from,
+      to: parts.to,
+      promotion: parts.promotion || undefined,
     });
     return move?.san || "";
   } catch {

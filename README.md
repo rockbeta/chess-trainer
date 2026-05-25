@@ -9,7 +9,8 @@ Static browser app that turns a screenshot of chess notation into a step-by-step
 - Edit the extracted move text before analysis.
 - Parse legal SAN moves with chess.js.
 - Analyze each position in a Stockfish WASM worker.
-- Step through the game and see the played move score plus up to three better alternatives.
+- Step through the game and see the played move score plus up to three strictly better alternatives.
+- Review played and alternative move arrows directly on the board, including each score.
 
 ## Run Locally
 
