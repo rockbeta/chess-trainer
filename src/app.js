@@ -4,7 +4,23 @@ const STOCKFISH_SCRIPT =
   new URL("../vendor/stockfish/stockfish.wasm.js", import.meta.url);
 const STOCKFISH_FALLBACK_SCRIPT =
   new URL("../vendor/stockfish/stockfish.js", import.meta.url);
-const OCR_WHITELIST = "0123456789abcdefghKQRBNOPxXOolI-=+#. ";
+const OCR_WHITELIST = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZxXOolI-=+#. ";
+const OCR_CONFUSIONS = new Map([
+  ["0", "O"],
+  ["O", "0"],
+  ["o", "0"],
+  ["I", "1"],
+  ["l", "1"],
+  ["|", "1"],
+  ["S", "5"],
+  ["s", "5"],
+  ["Z", "2"],
+  ["z", "2"],
+  ["A", "4"],
+  ["B", "8"],
+  ["G", "6"],
+  ["q", "g"],
+]);
 
 const SAMPLE_MOVES = `1. d4 c6 2. Nf3 d5 3. e3 e6 4. Bd3 c5 5. dxc5 Bxc5 6. Nbd2 Nc6 7. c3 Nge7 8. O-O Bd7 9. e4 O-O 10. exd5 Nxd5 11. Re1 Nf4 12. Bb1 Qg5 13. g3 Nh3+ 14. Kg2 Qh5 15. Qc2 Bxf2 16. Rf1 Be3 17. Ne4 Bxc1 18. Qxc1 Ne7 19. Nf2 Nxf2 20. Rxf2 Bc6 21. Kg1 Bxf3 22. Qe3 Bc6 23. Bd3 Rae8 24. Be2 Qd5 25. Bf3 Qb5 26. Qxa7 Bxf3 27. Rxf3 Qxb2 28. Raf1 Nd5 29. Qd4 Rc8 30. c4 Nf6 31. a4 Qxd4+`;
 
@@ -154,7 +170,7 @@ async function runOcr() {
         const passStart = 10 + Math.round((index / sources.length) * 78);
         const passSize = Math.round(78 / sources.length);
         setLog(`OCR pass ${index + 1}/${sources.length}: ${source.name}`);
-        await worker.setParameters(ocrParameters(source.psm));
+        await worker.setParameters(ocrParameters(source));
         const result = await worker.recognize(source.image);
         const scored = scoreOcrText(result.data.text || "", source.name);
         results.push(scored);
@@ -176,7 +192,7 @@ async function runOcr() {
     }
 
     const best = pickBestOcrResult(results);
-    els.pgnText.value = best.cleaned;
+    els.pgnText.value = best.parsed.moves.length ? formatParsedMoves(best.parsed.moves) : best.cleaned;
     setProgress(100);
     setLog(`OCR complete using ${best.source}. Parsed ${best.parsed.moves.length} legal moves.`);
     parseCurrentText();
@@ -187,20 +203,26 @@ async function runOcr() {
   }
 }
 
-function ocrParameters(psm) {
-  return {
+function ocrParameters(source) {
+  const params = {
     preserve_interword_spaces: "1",
-    tessedit_pageseg_mode: String(psm),
-    tessedit_char_whitelist: OCR_WHITELIST,
+    tessedit_pageseg_mode: String(source.psm),
     user_defined_dpi: "300",
   };
+
+  if (source.whitelist) {
+    params.tessedit_char_whitelist = OCR_WHITELIST;
+  }
+
+  return params;
 }
 
 async function buildOcrSources(file) {
   return [
-    { name: "original screenshot", image: file, psm: 6 },
-    { name: "high contrast text", image: await preprocessImage(file, "binary"), psm: 6 },
-    { name: "soft contrast text", image: await preprocessImage(file, "grayscale"), psm: 6 },
+    { name: "original screenshot", image: file, psm: 6, whitelist: true },
+    { name: "original screenshot, open alphabet", image: file, psm: 6, whitelist: false },
+    { name: "high contrast text", image: await preprocessImage(file, "binary"), psm: 6, whitelist: true },
+    { name: "soft contrast text", image: await preprocessImage(file, "grayscale"), psm: 6, whitelist: true },
   ];
 }
 
@@ -231,6 +253,18 @@ function pickBestOcrResult(results) {
     if (b.parsed.moves.length !== a.parsed.moves.length) return b.parsed.moves.length - a.parsed.moves.length;
     return a.cleaned.length - b.cleaned.length;
   })[0];
+}
+
+function formatParsedMoves(moves) {
+  const pairs = [];
+
+  for (let index = 0; index < moves.length; index += 2) {
+    const white = moves[index];
+    const black = moves[index + 1];
+    pairs.push(`${white.number}. ${white.san}${black ? ` ${black.san}` : ""}`);
+  }
+
+  return pairs.join(" ");
 }
 
 async function preprocessImage(file, mode) {
@@ -396,36 +430,31 @@ function parseMoves(rawText) {
   const moves = [];
   const errors = [];
 
-  tokens.forEach((token) => {
+  for (let index = 0; index < tokens.length; index += 1) {
     const beforeFen = chess.fen();
-    const repaired = repairMoveToken(token);
-    const candidates = buildMoveCandidates(repaired);
     let move = null;
-    let usedToken = repaired;
+    let usedToken = tokens[index];
 
-    for (const candidate of candidates) {
-      try {
-        move = chess.move(candidate, { strict: false });
-        usedToken = candidate;
+    const tokenGroups = [
+      [tokens[index]],
+      [tokens[index], tokens[index + 1]],
+      [tokens[index], tokens[index + 1], tokens[index + 2]],
+    ].filter((group) => group.every(Boolean));
+
+    for (const group of tokenGroups) {
+      const rawToken = group.join("");
+      const resolved = resolveMoveToken(chess, rawToken);
+      if (resolved.move) {
+        move = resolved.move;
+        usedToken = resolved.usedToken;
+        index += group.length - 1;
         break;
-      } catch {
-        move = null;
       }
     }
 
     if (!move) {
-      const legal = chess.moves({ verbose: true });
-      const normalizedToken = normalizeSanForCompare(repaired);
-      const fuzzy = legal.find((legalMove) => normalizeSanForCompare(legalMove.san) === normalizedToken);
-      if (fuzzy) {
-        move = chess.move(fuzzy.san, { strict: false });
-        usedToken = fuzzy.san;
-      }
-    }
-
-    if (!move) {
-      errors.push({ token, fen: beforeFen });
-      return;
+      errors.push({ token: tokens[index], fen: beforeFen });
+      continue;
     }
 
     moves.push({
@@ -441,7 +470,7 @@ function parseMoves(rawText) {
       to: move.to,
       promotion: move.promotion || "",
     });
-  });
+  }
 
   return { moves, errors };
 }
@@ -452,8 +481,8 @@ function cleanMoveText(input) {
     .replace(/[|]/g, "I")
     .replace(/[×]/g, "x")
     .replace(/[–—−]/g, "-")
-    .replace(/0\s*-\s*0\s*-\s*0/gi, "O-O-O")
-    .replace(/0\s*-\s*0/gi, "O-O")
+    .replace(/[o0]\s*-\s*[o0]\s*-\s*[o0]/gi, "O-O-O")
+    .replace(/[o0]\s*-\s*[o0]/gi, "O-O")
     .replace(/\bOOO\b/gi, "O-O-O")
     .replace(/\bOO\b/gi, "O-O")
     .replace(/\s+/g, " ")
@@ -467,18 +496,45 @@ function tokenizeMoves(text) {
     .replace(/\([^)]*\)/g, " ")
     .replace(/\$\d+/g, " ")
     .replace(/\d+\s*\.\s*\.\./g, " ")
-    .replace(/\d+\s*\./g, " ")
+    .replace(/\b\d+\s*[.,:]\s*/g, " ")
     .replace(/\b(?:1-0|0-1|1\/2-1\/2|\*)\b/g, " ")
     .split(/\s+/)
     .map((token) => token.trim())
     .filter(Boolean)
+    .filter((token) => !/^[+#=.,:;-]+$/.test(token))
     .filter((token) => !/^(?:Options|Explore|Back|Forward)$/i.test(token));
+}
+
+function resolveMoveToken(chess, token) {
+  const repaired = repairMoveToken(token);
+  const candidates = buildMoveCandidates(repaired);
+
+  for (const candidate of candidates) {
+    try {
+      return {
+        move: chess.move(candidate, { strict: false }),
+        usedToken: candidate,
+      };
+    } catch {
+      // Keep trying chess-specific repairs below.
+    }
+  }
+
+  const legal = chess.moves({ verbose: true });
+  const fuzzy = findClosestLegalMove(repaired, legal);
+  if (!fuzzy) {
+    return { move: null, usedToken: repaired };
+  }
+
+  return {
+    move: chess.move(fuzzy.san, { strict: false }),
+    usedToken: fuzzy.san,
+  };
 }
 
 function repairMoveToken(token) {
   let repaired = token
-    .replace(/^[^a-hKQRBNO0]+/i, "")
-    .replace(/[^a-hKQRBNO0x=+#\-1-8]+$/i, "")
+    .replace(/[^a-zA-Z0-9xX=+#\-]/g, "")
     .replace(/[,:;]+$/g, "");
 
   if (/^[o0][- ]?[o0]([- ]?[o0])?[+#]?$/i.test(repaired)) {
@@ -492,6 +548,8 @@ function repairMoveToken(token) {
   repaired = repaired.replace(/([a-h])x([a-h])([Il])([+#]?)$/g, "$1x$21$4");
   repaired = repaired.replace(/([KQRBN])x([a-h])([Il])([+#]?)$/g, "$1x$21$4");
   repaired = repaired.replace(/([a-h])O([+#]?)$/g, "$10$2");
+  repaired = repaired.replace(/x([a-h])([AIlS])([+#]?)$/g, (_match, file, rank, suffix) => `x${file}${ocrRank(rank)}${suffix}`);
+  repaired = repaired.replace(/([a-h])([AIlS])([+#]?)$/g, (_match, file, rank, suffix) => `${file}${ocrRank(rank)}${suffix}`);
 
   return repaired;
 }
@@ -515,11 +573,117 @@ function buildMoveCandidates(token) {
   return [...candidates].filter(Boolean);
 }
 
+function ocrRank(value) {
+  const rank = OCR_CONFUSIONS.get(value) || value;
+  return /^[1-8]$/.test(rank) ? rank : value;
+}
+
 function normalizeSanForCompare(san) {
   return san
     .replace(/[+#?!]/g, "")
     .replace(/0/g, "O")
     .replace(/[Il]/g, "1");
+}
+
+function findClosestLegalMove(token, legalMoves) {
+  const tokenForms = moveForms(token);
+  const scored = legalMoves
+    .flatMap((move) =>
+      moveForms(move.san).map((form) => ({
+        move,
+        distance: bestMoveDistance(tokenForms, [form]),
+      }))
+    )
+    .sort((a, b) => a.distance - b.distance);
+
+  const best = scored[0];
+  if (!best) return null;
+
+  const nextDifferent = scored.find((entry) => entry.move.san !== best.move.san);
+  const bestLength = Math.max(2, moveKey(best.move.san).length);
+  const limit = Math.max(0.65, Math.min(1.75, bestLength * 0.24));
+  const clearMargin = !nextDifferent || nextDifferent.distance - best.distance >= 0.28;
+
+  if (best.distance <= limit && clearMargin) {
+    return best.move;
+  }
+
+  return null;
+}
+
+function bestMoveDistance(leftForms, rightForms) {
+  let best = Infinity;
+
+  for (const left of leftForms) {
+    for (const right of rightForms) {
+      best = Math.min(best, weightedEditDistance(left, right));
+    }
+  }
+
+  return best;
+}
+
+function moveForms(value) {
+  const key = moveKey(value);
+  const forms = new Set([key, key.replace(/x/g, "")]);
+
+  if (/^O-O/.test(key)) {
+    forms.add(key.replace(/-/g, ""));
+  }
+
+  const disambiguated = key.match(/^([KQRBN])([a-h1-8]{1,2})(x?)([a-h][1-8])(=?[QRBN])?$/);
+  if (disambiguated) {
+    forms.add(`${disambiguated[1]}${disambiguated[3]}${disambiguated[4]}${disambiguated[5] || ""}`);
+    forms.add(`${disambiguated[1]}${disambiguated[4]}${disambiguated[5] || ""}`);
+  }
+
+  return [...forms].filter(Boolean);
+}
+
+function moveKey(value) {
+  return value
+    .normalize("NFKC")
+    .replace(/[+#?!]/g, "")
+    .replace(/[×]/g, "x")
+    .replace(/[o0]/gi, "O")
+    .replace(/[Il|]/g, "1")
+    .replace(/S/g, "5")
+    .replace(/Z/g, "2")
+    .replace(/\s+/g, "")
+    .replace(/[^a-zA-Z0-9x=+\-]/g, "");
+}
+
+function weightedEditDistance(left, right) {
+  const rows = left.length + 1;
+  const columns = right.length + 1;
+  const dp = Array.from({ length: rows }, () => new Array(columns).fill(0));
+
+  for (let row = 0; row < rows; row += 1) dp[row][0] = row;
+  for (let column = 0; column < columns; column += 1) dp[0][column] = column;
+
+  for (let row = 1; row < rows; row += 1) {
+    for (let column = 1; column < columns; column += 1) {
+      const substitution = characterDistance(left[row - 1], right[column - 1]);
+      dp[row][column] = Math.min(
+        dp[row - 1][column] + deletionCost(left[row - 1]),
+        dp[row][column - 1] + deletionCost(right[column - 1]),
+        dp[row - 1][column - 1] + substitution
+      );
+    }
+  }
+
+  return dp[left.length][right.length];
+}
+
+function characterDistance(left, right) {
+  if (left === right) return 0;
+  if (left.toLowerCase() === right.toLowerCase()) return 0.08;
+  if (OCR_CONFUSIONS.get(left) === right || OCR_CONFUSIONS.get(right) === left) return 0.18;
+  return 1;
+}
+
+function deletionCost(char) {
+  return char === "x" || char === "-" || char === "=" ? 0.35 : 1;
 }
 
 async function analyzeGame() {
