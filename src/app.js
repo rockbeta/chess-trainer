@@ -175,7 +175,7 @@ async function runOcr() {
     }
 
     const best = pickBestOcrResult(results);
-    els.pgnText.value = best.parsed.moves.length ? formatParsedMoves(best.parsed.moves) : best.cleaned;
+    els.pgnText.value = shouldUseCanonicalTranscript(best) ? formatParsedMoves(best.parsed.moves) : best.cleaned;
     setProgress(100);
     setLog(`OCR complete using ${best.source}. Parsed ${best.parsed.moves.length} legal moves.`);
     parseCurrentText();
@@ -309,17 +309,39 @@ function scoreOcrText(text, source) {
   const cleaned = cleanMoveText(text);
   const parsed = parseMoves(cleaned);
   const moveNumberCount = (cleaned.match(/\b\d{1,3}\s*\./g) || []).length;
+  const highestMoveNumber = highestMoveNumberInText(cleaned);
+  const expectedPlies = highestMoveNumber ? highestMoveNumber * 2 : 0;
   const tokenCount = tokenizeMoves(cleaned).length;
   const skippedCount = parsed.errors.length;
-  const score = parsed.moves.length * 20 + moveNumberCount * 3 - skippedCount * 6 - Math.max(0, tokenCount - parsed.moves.length - skippedCount);
+  const missingExpectedMoves = Math.max(0, expectedPlies - parsed.moves.length);
+  const score =
+    parsed.moves.length * 24 +
+    moveNumberCount * 3 -
+    skippedCount * 12 -
+    missingExpectedMoves * 14 -
+    Math.max(0, tokenCount - parsed.moves.length - skippedCount);
 
   return {
     source,
     text,
     cleaned,
     parsed,
+    expectedPlies,
     score,
   };
+}
+
+function highestMoveNumberInText(text) {
+  return Math.max(0, ...[...text.matchAll(/\b(\d{1,3})\s*\./g)].map((match) => Number(match[1])));
+}
+
+function shouldUseCanonicalTranscript(result) {
+  if (!result.parsed.moves.length) return false;
+  if (!result.expectedPlies) return result.parsed.errors.length === 0;
+
+  const enoughMoves = result.parsed.moves.length >= result.expectedPlies - 1;
+  const lowNoise = result.parsed.errors.length <= 2;
+  return enoughMoves && lowNoise;
 }
 
 function pickBestOcrResult(results) {
@@ -649,6 +671,13 @@ function buildMoveCandidates(token) {
     candidates.add(token.replace(/([a-h][18])([QRBN])$/, "$1=$2"));
   }
 
+  for (const candidate of [...candidates]) {
+    const suffix = candidate.match(/[+#]$/)?.[0] || "";
+    const body = suffix ? candidate.slice(0, -1) : candidate;
+    candidates.add(`${body.replace(/([a-h][1-8])[a-zA-Z]+$/, "$1")}${suffix}`);
+    candidates.add(`${body.replace(/([KQRBN]?)([a-h1-8]{0,2})x([a-h])[a-zA-Z]+$/, "$1$2x$3")}${suffix}`);
+  }
+
   return [...candidates].filter(Boolean);
 }
 
@@ -714,6 +743,18 @@ function moveForms(value) {
   if (disambiguated) {
     forms.add(`${disambiguated[1]}${disambiguated[3]}${disambiguated[4]}${disambiguated[5] || ""}`);
     forms.add(`${disambiguated[1]}${disambiguated[4]}${disambiguated[5] || ""}`);
+    forms.add(`${disambiguated[1]}${disambiguated[3]}${disambiguated[4][0]}`);
+  }
+
+  const targetSquare = key.match(/^([KQRBN]?)([a-h1-8]{0,2})(x?)([a-h])([1-8])([a-zA-Z]+)$/);
+  if (targetSquare) {
+    forms.add(`${targetSquare[1]}${targetSquare[2]}${targetSquare[3]}${targetSquare[4]}${targetSquare[5]}`);
+    forms.add(`${targetSquare[1]}${targetSquare[2]}${targetSquare[3]}${targetSquare[4]}`);
+  }
+
+  const targetFileOnly = key.match(/^([KQRBN]?)([a-h1-8]{0,2})(x)([a-h])[a-zA-Z]$/);
+  if (targetFileOnly) {
+    forms.add(`${targetFileOnly[1]}${targetFileOnly[2]}${targetFileOnly[3]}${targetFileOnly[4]}`);
   }
 
   return [...forms].filter(Boolean);
