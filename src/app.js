@@ -33,6 +33,7 @@ const OCR_CONFUSIONS = new Map([
   ["b", "6"],
   ["E", "6"],
   ["C", "6"],
+  ["d", "4"],
 ]);
 
 // Maps OCR-confused digits back to chess piece letters (KQRBN).
@@ -66,6 +67,7 @@ const PIECE_DIGIT_SWAPS = new Map([
   ["O", "0"],
   ["0", "O"],
   ["D", "0"],
+  ["d", "4"],
 ]);
 
 const SAMPLE_MOVES = `1. d4 c6 2. Nf3 d5 3. e3 e6 4. Bd3 c5 5. dxc5 Bxc5 6. Nbd2 Nc6 7. c3 Nge7 8. O-O Bd7 9. e4 O-O 10. exd5 Nxd5 11. Re1 Nf4 12. Bb1 Qg5 13. g3 Nh3+ 14. Kg2 Qh5 15. Qc2 Bxf2 16. Rf1 Be3 17. Ne4 Bxc1 18. Qxc1 Ne7 19. Nf2 Nxf2 20. Rxf2 Bc6 21. Kg1 Bxf3 22. Qe3 Bc6 23. Bd3 Rae8 24. Be2 Qd5 25. Bf3 Qb5 26. Qxa7 Bxf3 27. Rxf3 Qxb2 28. Raf1 Nd5 29. Qd4 Rc8 30. c4 Nf6 31. a4 Qxd4+`;
@@ -912,8 +914,8 @@ function repairMoveToken(token) {
   repaired = repaired.replace(/([a-h])O([+#]?)$/g, "$10$2");
 
   // Expanded rank confusion: handle all commonly confused characters in rank position.
-  repaired = repaired.replace(/x([a-h])([AIlSGEDTtJj])([+#]?)$/g, (_match, file, rank, suffix) => `x${file}${ocrRank(rank)}${suffix}`);
-  repaired = repaired.replace(/([a-h])([AIlSGEDTtJj])([+#]?)$/g, (_match, file, rank, suffix) => `${file}${ocrRank(rank)}${suffix}`);
+  repaired = repaired.replace(/x([a-h])([AIlSGEDTtJjd])([+#]?)$/g, (_match, file, rank, suffix) => `x${file}${ocrRank(rank)}${suffix}`);
+  repaired = repaired.replace(/([a-h])([AIlSGEDTtJjd])([+#]?)$/g, (_match, file, rank, suffix) => `${file}${ocrRank(rank)}${suffix}`);
 
   // Fix leading digit that should be a piece letter: "8xg6" → "Bxg6".
   repaired = repaired.replace(/^([0-9])(x?[a-h][1-8])([+#]?)$/, (_match, digit, rest, suffix) => {
