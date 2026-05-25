@@ -440,6 +440,47 @@ textarea:focus-visible {
   font-weight: 700;
 }
 
+.arrow-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 10px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.arrow-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.58);
+}
+
+.played-dot {
+  background: #2454a6;
+}
+
+.alt-one-dot {
+  background: #14795c;
+}
+
+.alt-two-dot {
+  background: #8a5a12;
+}
+
+.alt-three-dot {
+  background: #8b3f6d;
+}
+
 .move-list-wrap {
   min-height: 280px;
 }
