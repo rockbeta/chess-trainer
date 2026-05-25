@@ -4,6 +4,8 @@ const STOCKFISH_SCRIPT =
   new URL("../vendor/stockfish/stockfish.wasm.js", import.meta.url);
 const STOCKFISH_FALLBACK_SCRIPT =
   new URL("../vendor/stockfish/stockfish.js", import.meta.url);
+const PADDLE_OCR_MODULE = "https://cdn.jsdelivr.net/npm/@paddleocr/paddleocr-js/+esm";
+const ONNX_RUNTIME_WASM_PATH = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
 const OCR_WHITELIST = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZxXOolI-=+#. ";
 const OCR_CONFUSIONS = new Map([
   ["0", "O"],
@@ -73,6 +75,7 @@ const state = {
   currentPly: 0,
   analysis: new Map(),
   engine: null,
+  paddleOcr: null,
   analyzing: false,
 };
 
@@ -84,6 +87,7 @@ const els = {
   previewWrap: document.querySelector("#previewWrap"),
   canvas: document.querySelector("#preprocessCanvas"),
   pgnText: document.querySelector("#pgnText"),
+  ocrEngineSelect: document.querySelector("#ocrEngineSelect"),
   depthInput: document.querySelector("#depthInput"),
   depthValue: document.querySelector("#depthValue"),
   maxPliesInput: document.querySelector("#maxPliesInput"),
@@ -153,42 +157,21 @@ async function runOcr() {
   setProgress(4);
 
   try {
-    const sources = await buildOcrSources(state.imageFile);
     const results = [];
+    const engine = els.ocrEngineSelect.value;
 
-    if (window.Tesseract?.createWorker) {
-      const worker = await window.Tesseract.createWorker("eng", 1, {
-        logger: (message) => {
-          if (message.status && !message.status.includes("recognizing")) {
-            setLog(`OCR ${message.status}`);
-          }
-        },
-      });
-
-      for (let index = 0; index < sources.length; index += 1) {
-        const source = sources[index];
-        const passStart = 10 + Math.round((index / sources.length) * 78);
-        const passSize = Math.round(78 / sources.length);
-        setLog(`OCR pass ${index + 1}/${sources.length}: ${source.name}`);
-        await worker.setParameters(ocrParameters(source));
-        const result = await worker.recognize(source.image);
-        const scored = scoreOcrText(result.data.text || "", source.name);
-        results.push(scored);
-        setProgress(passStart + passSize);
+    if (engine === "paddle" || engine === "auto") {
+      try {
+        setLog("Loading PaddleOCR neural model.");
+        results.push(await runPaddleOcr(state.imageFile));
+        setProgress(engine === "auto" ? 46 : 88);
+      } catch (error) {
+        setLog(`PaddleOCR failed, falling back: ${error.message}`);
       }
+    }
 
-      await worker.terminate();
-    } else if (window.Tesseract?.recognize) {
-      const result = await window.Tesseract.recognize(state.imageFile, "eng", {
-        logger: (message) => {
-          if (message.status === "recognizing text" && message.progress) {
-            setProgress(10 + Math.round(message.progress * 78));
-          }
-        },
-      });
-      results.push(scoreOcrText(result.data.text || "", "Original"));
-    } else {
-      throw new Error("Tesseract.js did not load.");
+    if (engine === "tesseract" || engine === "auto" || !results.length) {
+      results.push(...await runTesseractOcr(state.imageFile, engine === "auto" ? 46 : 10));
     }
 
     const best = pickBestOcrResult(results);
@@ -201,6 +184,102 @@ async function runOcr() {
   } finally {
     setBusy(false);
   }
+}
+
+async function runTesseractOcr(file, progressBase) {
+  const sources = await buildOcrSources(file);
+  const results = [];
+
+  if (window.Tesseract?.createWorker) {
+    const worker = await window.Tesseract.createWorker("eng", 1, {
+      logger: (message) => {
+        if (message.status && !message.status.includes("recognizing")) {
+          setLog(`OCR ${message.status}`);
+        }
+      },
+    });
+
+    for (let index = 0; index < sources.length; index += 1) {
+      const source = sources[index];
+      const passStart = progressBase + Math.round((index / sources.length) * 42);
+      const passSize = Math.round(42 / sources.length);
+      setLog(`OCR pass ${index + 1}/${sources.length}: ${source.name}`);
+      await worker.setParameters(ocrParameters(source));
+      const result = await worker.recognize(source.image);
+      const scored = scoreOcrText(result.data.text || "", source.name);
+      results.push(scored);
+      setProgress(passStart + passSize);
+    }
+
+    await worker.terminate();
+  } else if (window.Tesseract?.recognize) {
+    const result = await window.Tesseract.recognize(file, "eng", {
+      logger: (message) => {
+        if (message.status === "recognizing text" && message.progress) {
+          setProgress(progressBase + Math.round(message.progress * 42));
+        }
+      },
+    });
+    results.push(scoreOcrText(result.data.text || "", "Original"));
+  } else {
+    throw new Error("Tesseract.js did not load.");
+  }
+
+  return results;
+}
+
+async function runPaddleOcr(file) {
+  if (!state.paddleOcr) {
+    const { PaddleOCR } = await import(PADDLE_OCR_MODULE);
+    state.paddleOcr = await PaddleOCR.create({
+      textDetectionModelName: "PP-OCRv5_mobile_det",
+      textRecognitionModelName: "PP-OCRv5_mobile_rec",
+      ortOptions: {
+        backend: "wasm",
+        wasmPaths: ONNX_RUNTIME_WASM_PATH,
+        numThreads: 1,
+        simd: true,
+      },
+    });
+  }
+
+  setLog("Running PaddleOCR neural recognition.");
+  const [result] = await state.paddleOcr.predict(file, {
+    textDetLimitSideLen: 1600,
+    textRecScoreThresh: 0.2,
+  });
+  const text = orderOcrItems(result?.items || []).map((item) => item.text).join(" ");
+  return scoreOcrText(text, "PaddleOCR neural");
+}
+
+function orderOcrItems(items) {
+  return [...items].sort((left, right) => {
+    const leftCenter = ocrItemCenter(left);
+    const rightCenter = ocrItemCenter(right);
+    const lineTolerance = Math.max(leftCenter.height, rightCenter.height, 18) * 0.7;
+
+    if (Math.abs(leftCenter.y - rightCenter.y) > lineTolerance) {
+      return leftCenter.y - rightCenter.y;
+    }
+
+    return leftCenter.x - rightCenter.x;
+  });
+}
+
+function ocrItemCenter(item) {
+  const points = item.poly || item.box || [];
+  const xs = points.map((point) => Array.isArray(point) ? point[0] : point.x).filter(Number.isFinite);
+  const ys = points.map((point) => Array.isArray(point) ? point[1] : point.y).filter(Number.isFinite);
+
+  if (!xs.length || !ys.length) {
+    return { x: 0, y: 0, height: 18 };
+  }
+
+  return {
+    x: (Math.min(...xs) + Math.max(...xs)) / 2,
+    y: (Math.min(...ys) + Math.max(...ys)) / 2,
+    height: Math.max(...ys) - Math.min(...ys),
+  };
 }
 
 function ocrParameters(source) {

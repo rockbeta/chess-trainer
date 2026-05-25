@@ -247,9 +247,13 @@ textarea:focus-visible {
 
 .settings-grid {
   display: grid;
-  grid-template-columns: 1fr minmax(105px, 130px);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: end;
   margin: 16px 0;
+}
+
+.settings-grid > .setting:first-child {
+  grid-column: 1 / -1;
 }
 
 .setting {
@@ -267,13 +271,15 @@ textarea:focus-visible {
   gap: 6px;
 }
 
-.compact-setting input {
+.compact-setting input,
+.compact-setting select {
   width: 100%;
   min-height: 38px;
   padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: #ffffff;
+  color: var(--ink);
 }
 
 .progress-track {

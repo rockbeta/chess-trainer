@@ -5,7 +5,7 @@ Static browser app that turns a screenshot of chess notation into a step-by-step
 ## What It Does
 
 - Upload a screenshot of a move list.
-- Run in-browser OCR with Tesseract.js, using original and enhanced image passes.
+- Run in-browser OCR with PaddleOCR.js neural OCR or Tesseract.js fallback.
 - Repair OCR text against legal SAN moves with chess.js.
 - Edit the extracted move text before analysis.
 - Analyze each position in a Stockfish WASM worker.
@@ -34,6 +34,7 @@ npm run start
 
 The page is static. It loads OCR and move parsing libraries from public CDNs, and includes a vendored Stockfish worker under `vendor/stockfish`:
 
+- PaddleOCR.js for neural OCR
 - Tesseract.js for OCR
 - chess.js for legal move parsing
 - stockfish.js WASM build for engine analysis
@@ -41,5 +42,7 @@ The page is static. It loads OCR and move parsing libraries from public CDNs, an
 ## Notes
 
 OCR is intentionally editable before analysis. Chess notation is compact, and screenshots often produce small mistakes like `0-0` versus `O-O`, `Qxcl` versus `Qxc1`, or missing check symbols. The app tries multiple OCR passes, repairs each move against the legal moves in the current position, and keeps the transcript that parses into the most legal moves.
+
+PaddleOCR neural OCR may download model assets on the first run. If that fails or is too slow, choose `Tesseract only` in the OCR Engine menu.
 
 Depth 8-10 is a practical browser default. Higher depth is more accurate, but it can be slow on laptops and mobile browsers.
