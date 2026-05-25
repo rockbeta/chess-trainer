@@ -302,22 +302,38 @@ async function runPaddleOcr(file) {
   // Run on original image.
   setLog("Running PaddleOCR on original image.");
   const [origResult] = await state.paddleOcr.predict(file, predictOpts);
-  const origText = orderOcrItems(origResult?.items || []).map((item) => item.text).join(" ");
+  const origItems = origResult?.items || [];
+  const origText = orderOcrItems(origItems).map((item) => item.text).join(" ");
   const origScored = scoreOcrText(origText, "PaddleOCR neural");
 
-  // Also run on a high-contrast preprocessed version for chess.com's multi-color text.
-  try {
-    setLog("Running PaddleOCR on enhanced image.");
-    const enhanced = await preprocessImage(file, "chesscom");
-    const [enhResult] = await state.paddleOcr.predict(enhanced, predictOpts);
-    const enhText = orderOcrItems(enhResult?.items || []).map((item) => item.text).join(" ");
-    const enhScored = scoreOcrText(enhText, "PaddleOCR neural (enhanced)");
+  // Run multiple enhanced passes to catch all text brightness levels.
+  // Chess.com has 3+ text brightness tiers on a dark background.
+  const enhanceModes = ["chesscom", "chesscom-aggressive", "contrast-stretch"];
+  const allResults = [origScored];
+  let allItems = [...origItems];
 
-    return enhScored.score > origScored.score ? enhScored : origScored;
-  } catch {
-    // If preprocessing fails, fall back to original result.
-    return origScored;
+  for (const mode of enhanceModes) {
+    try {
+      setLog(`Running PaddleOCR on ${mode} enhanced image.`);
+      const enhanced = await preprocessImage(file, mode);
+      const [enhResult] = await state.paddleOcr.predict(enhanced, predictOpts);
+      const enhItems = enhResult?.items || [];
+      const enhText = orderOcrItems(enhItems).map((item) => item.text).join(" ");
+      const enhScored = scoreOcrText(enhText, `PaddleOCR neural (${mode})`);
+      allResults.push(enhScored);
+      allItems = mergeOcrItems(allItems, enhItems);
+    } catch {
+      // If this mode fails, continue with others.
+    }
   }
+
+  // Build a merged result from all detected text blocks across passes.
+  const mergedText = orderOcrItems(allItems).map((item) => item.text).join(" ");
+  const mergedScored = scoreOcrText(mergedText, "PaddleOCR neural (merged)");
+  allResults.push(mergedScored);
+
+  // Return the best scoring result from all passes.
+  return pickBestOcrResult(allResults);
 }
 
 function orderOcrItems(items) {
@@ -350,6 +366,45 @@ function ocrItemCenter(item) {
   };
 }
 
+/**
+ * Merge OCR items from two passes, deduplicating based on spatial overlap.
+ * If a new item overlaps an existing one, keep the one with more text.
+ * New items that don't overlap anything are appended (they represent text
+ * that was only detected in the new pass, e.g. dim gray text).
+ */
+function mergeOcrItems(existing, incoming) {
+  const merged = [...existing];
+
+  for (const newItem of incoming) {
+    const newCenter = ocrItemCenter(newItem);
+    let foundOverlap = false;
+
+    for (let i = 0; i < merged.length; i++) {
+      const existingCenter = ocrItemCenter(merged[i]);
+      const tolerance = Math.max(existingCenter.height, newCenter.height, 18) * 0.6;
+
+      if (
+        Math.abs(existingCenter.y - newCenter.y) < tolerance &&
+        Math.abs(existingCenter.x - newCenter.x) < tolerance * 1.5
+      ) {
+        // Overlapping region — keep the one with more recognized text.
+        if ((newItem.text || "").length > (merged[i].text || "").length) {
+          merged[i] = newItem;
+        }
+        foundOverlap = true;
+        break;
+      }
+    }
+
+    if (!foundOverlap) {
+      // This text block was only detected in the new pass (dim text).
+      merged.push(newItem);
+    }
+  }
+
+  return merged;
+}
+
 function ocrParameters(source) {
   const params = {
     preserve_interword_spaces: "1",
@@ -370,6 +425,8 @@ async function buildOcrSources(file) {
     { name: "original screenshot, open alphabet", image: file, psm: 6, whitelist: false },
     { name: "high contrast text", image: await preprocessImage(file, "binary"), psm: 6, whitelist: true },
     { name: "chess.com optimized", image: await preprocessImage(file, "chesscom"), psm: 6, whitelist: true },
+    { name: "chess.com aggressive", image: await preprocessImage(file, "chesscom-aggressive"), psm: 6, whitelist: true },
+    { name: "contrast stretched", image: await preprocessImage(file, "contrast-stretch"), psm: 6, whitelist: true },
     { name: "soft contrast text", image: await preprocessImage(file, "grayscale"), psm: 6, whitelist: true },
   ];
 }
@@ -489,8 +546,13 @@ async function preprocessImage(file, mode) {
   // Chess.com-specific threshold: very low to catch even the dimmest gray text.
   // Chess.com move lists have bright white, medium white, and gray text on a dark bg.
   const chesscomThreshold = darkBackground
-    ? Math.max(stats.borderAverage + 12, stats.p05 + 20)
-    : Math.min(stats.borderAverage - 12, stats.p95 - 20);
+    ? Math.max(stats.borderAverage + 8, stats.p05 + 14)
+    : Math.min(stats.borderAverage - 8, stats.p95 - 14);
+
+  // Even more aggressive threshold to capture the very dimmest text.
+  const aggressiveThreshold = darkBackground
+    ? Math.max(stats.borderAverage + 4, stats.p05 + 8)
+    : Math.min(stats.borderAverage - 4, stats.p95 - 8);
 
   for (let index = 0; index < data.data.length; index += 4) {
     const r = data.data[index];
@@ -503,6 +565,14 @@ async function preprocessImage(file, mode) {
       // Ultra-aggressive: any pixel above the dark background becomes foreground.
       const foreground = darkBackground ? gray >= chesscomThreshold : gray <= chesscomThreshold;
       output = foreground ? 0 : 255;
+    } else if (mode === "chesscom-aggressive") {
+      // Extreme threshold to catch the very dimmest gray text.
+      const foreground = darkBackground ? gray >= aggressiveThreshold : gray <= aggressiveThreshold;
+      output = foreground ? 0 : 255;
+    } else if (mode === "contrast-stretch") {
+      // Stretch all text to uniform black on white, preserving details.
+      // This helps OCR by making dim and bright text equally readable.
+      output = contrastStretchPixel(gray, stats, darkBackground);
     } else if (mode === "binary") {
       const foreground = darkBackground ? gray >= threshold : gray <= threshold;
       output = foreground ? 0 : 255;
@@ -609,6 +679,27 @@ function normalizeTextPixel(gray, stats, darkBackground) {
   return Math.round(clamp(boosted, 0, 1) * 255);
 }
 
+/**
+ * Contrast-stretch pixel for multi-brightness text on a uniform background.
+ * Uses a sigmoid curve to push all "foreground" grays toward black while
+ * keeping the background white. This captures dim, medium, and bright text
+ * with good legibility for OCR.
+ */
+function contrastStretchPixel(gray, stats, darkBackground) {
+  const bgLevel = stats.borderAverage;
+  // Distance from background, normalized.
+  const distance = darkBackground ? gray - bgLevel : bgLevel - gray;
+  // Anything close to background is background.
+  if (distance < 4) return 255;
+  // Stretch: map small distances (dim text) and large distances (bright text) all toward black.
+  const maxDistance = darkBackground ? (255 - bgLevel) : bgLevel;
+  const ratio = clamp(distance / Math.max(maxDistance, 1), 0, 1);
+  // Power curve: 0.35 exponent aggressively boosts dim text (low ratio) toward black.
+  // Even ratio=0.05 (very dim text) → 0.05^0.35 ≈ 0.29 → pixel ≈ 181 (visible gray).
+  const ink = Math.pow(ratio, 0.35);
+  return Math.round(clamp(1 - ink, 0, 1) * 255);
+}
+
 function parseCurrentText({ updateLog = true } = {}) {
   const result = parseMoves(els.pgnText.value);
   state.moves = result.moves;
@@ -695,6 +786,8 @@ function cleanMoveText(input) {
     // Fix merged move-number + move: "19Na4" → "19. Na4", "3Nc3" → "3. Nc3"
     .replace(/\b(\d{1,3})([KQRBNOP][a-h])/g, "$1. $2")
     .replace(/\b(\d{1,3})([a-h][x1-8])/g, "$1. $2")
+    // Fix merged move-number + castling: "22O-O-O" → "22. O-O-O", "8O-O" → "8. O-O"
+    .replace(/\b(\d{1,3})\.?\s*([oO0]-[oO0](?:-[oO0])?)/g, "$1. $2")
     // Normalize castling — generous pattern matching.
     .replace(/[o0]\s*-\s*[o0]\s*-\s*[o0]/gi, "O-O-O")
     .replace(/[o0]\s*-\s*[o0]/gi, "O-O")
@@ -702,6 +795,8 @@ function cleanMoveText(input) {
     .replace(/\bOO\b/gi, "O-O")
     .replace(/\b0-0-0\b/g, "O-O-O")
     .replace(/\b0-0\b/g, "O-O")
+    // Fix commas misread as dots in move numbers: "19, Na4" → "19. Na4".
+    .replace(/(\d{1,3})\s*,\s*(?=[KQRBNa-hO])/g, "$1. ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -809,6 +904,10 @@ function repairMoveToken(token) {
   repaired = repaired.replace(/([a-h])x([a-h])([Il])([+#]?)$/g, "$1x$21$4");
   repaired = repaired.replace(/([KQRBN])x([a-h])([Il])([+#]?)$/g, "$1x$21$4");
 
+  // Fix disambiguated piece moves with "I"/"l" as rank: "R1c8" → works, "RIc8" → "R1c8".
+  repaired = repaired.replace(/^([KQRBN])([Il])([a-h][1-8])([+#]?)$/g, "$11$3$4");
+  repaired = repaired.replace(/^([KQRBN])([Il])x([a-h][1-8])([+#]?)$/g, "$11x$3$4");
+
   // Fix trailing "O" misread as "0" after a file letter: "a0" → valid? only if no "aO" move.
   repaired = repaired.replace(/([a-h])O([+#]?)$/g, "$10$2");
 
@@ -822,8 +921,17 @@ function repairMoveToken(token) {
     return piece ? `${piece}${rest}${suffix}` : `${digit}${rest}${suffix}`;
   });
 
+  // Fix disambiguated piece move with leading digit: "8fc8" → "Bfc8" (unlikely but safe).
+  repaired = repaired.replace(/^([0-9])([a-h])(x?)([a-h][1-8])([+#]?)$/, (_match, digit, disambig, capture, target, suffix) => {
+    const piece = DIGIT_TO_PIECE.get(digit);
+    return piece ? `${piece}${disambig}${capture}${target}${suffix}` : `${digit}${disambig}${capture}${target}${suffix}`;
+  });
+
   // Fix trailing garbage after a valid-looking move.
   repaired = repaired.replace(/^([KQRBN]?[a-h]?x?[a-h][1-8](?:=[QRBN])?[+#]?)[a-zA-Z]{2,}$/, "$1");
+
+  // Fix disambiguated piece move trailing garbage: "Rfc8xyz" → "Rfc8".
+  repaired = repaired.replace(/^([KQRBN][a-h][a-h][1-8](?:=[QRBN])?[+#]?)[a-zA-Z]{2,}$/, "$1");
 
   return repaired;
 }
@@ -861,6 +969,29 @@ function buildMoveCandidates(token) {
   // Try lowercase piece normalization: "na4" → "Na4", "rfc8" → "Rfc8".
   if (/^[kqrbn]/.test(token)) {
     candidates.add(token[0].toUpperCase() + token.slice(1));
+  }
+
+  // Normalize uppercase X to lowercase x (capture): "NXg6" → "Nxg6".
+  if (/X/.test(token)) {
+    candidates.add(token.replace(/X/g, "x"));
+  }
+
+  // Try inserting 'x' for captures: "Bg6" → "Bxg6" when a capture was intended.
+  const captureInsert = token.match(/^([KQRBN])([a-h])([1-8])([+#]?)$/);
+  if (captureInsert) {
+    candidates.add(`${captureInsert[1]}x${captureInsert[2]}${captureInsert[3]}${captureInsert[4]}`);
+  }
+
+  // Pawn capture insert: "bg6" → "bxg6".
+  const pawnCaptureInsert = token.match(/^([a-h])([a-h])([1-8])([+#]?)$/);
+  if (pawnCaptureInsert && pawnCaptureInsert[1] !== pawnCaptureInsert[2]) {
+    candidates.add(`${pawnCaptureInsert[1]}x${pawnCaptureInsert[2]}${pawnCaptureInsert[3]}${pawnCaptureInsert[4]}`);
+  }
+
+  // Handle trailing 't' as '+' (OCR misread): "Rfc8t" → "Rfc8+".
+  if (/t$/.test(token)) {
+    candidates.add(token.slice(0, -1) + "+");
+    candidates.add(token.slice(0, -1));
   }
 
   // Try each character substitution from OCR confusions (single-character swaps).
