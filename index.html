@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chess Trainer</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/6.0.1/tesseract.min.js"
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+      defer
+    ></script>
+    <script type="module" src="./src/app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Static chess OCR analyzer</p>
+        <h1>Chess Trainer</h1>
+      </div>
+      <div class="status-pill" id="engineStatus" aria-live="polite">Engine idle</div>
+    </header>
+
+    <main class="workspace">
+      <section class="panel input-panel" aria-labelledby="inputTitle">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Input</p>
+            <h2 id="inputTitle">Screenshot To Moves</h2>
+          </div>
+          <button class="ghost-button" id="sampleButton" type="button">Sample</button>
+        </div>
+
+        <div class="upload-row">
+          <input id="imageInput" type="file" accept="image/*" />
+          <label class="primary-button" for="imageInput">Choose Image</label>
+          <button class="secondary-button" id="ocrButton" type="button" disabled>Run OCR</button>
+        </div>
+
+        <div class="preview-wrap" id="previewWrap">
+          <img id="imagePreview" alt="Uploaded chess move screenshot preview" />
+          <canvas id="preprocessCanvas" hidden></canvas>
+        </div>
+
+        <label class="field-label" for="pgnText">Move Text</label>
+        <textarea
+          id="pgnText"
+          spellcheck="false"
+          placeholder="Paste or OCR the game moves here, for example: 1. d4 c6 2. Nf3 d5 ..."
+        ></textarea>
+
+        <div class="settings-grid">
+          <label class="setting">
+            <span>Depth</span>
+            <input id="depthInput" type="range" min="6" max="14" value="10" />
+            <output id="depthValue">10</output>
+          </label>
+          <label class="setting compact-setting">
+            <span>Max Moves</span>
+            <input id="maxPliesInput" type="number" min="1" max="120" value="60" />
+          </label>
+        </div>
+
+        <div class="action-row">
+          <button class="primary-button" id="analyzeButton" type="button">Analyze</button>
+          <button class="secondary-button" id="parseButton" type="button">Parse Only</button>
+        </div>
+
+        <div class="progress-track" aria-hidden="true">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <p class="log-line" id="logLine" aria-live="polite">Waiting for a screenshot or move text.</p>
+        <div class="parse-errors" id="parseErrors" hidden></div>
+      </section>
+
+      <section class="board-area" aria-labelledby="boardTitle">
+        <div class="board-toolbar">
+          <div>
+            <p class="eyebrow">Board</p>
+            <h2 id="boardTitle">Move Review</h2>
+          </div>
+          <div class="nav-buttons" aria-label="Move navigation">
+            <button class="icon-button" id="toStartButton" type="button" title="First position" aria-label="First position">
+              <span aria-hidden="true">&#124;&#8249;</span>
+            </button>
+            <button class="icon-button" id="prevButton" type="button" title="Previous move" aria-label="Previous move">
+              <span aria-hidden="true">&#8249;</span>
+            </button>
+            <button class="icon-button" id="nextButton" type="button" title="Next move" aria-label="Next move">
+              <span aria-hidden="true">&#8250;</span>
+            </button>
+            <button class="icon-button" id="toEndButton" type="button" title="Last move" aria-label="Last move">
+              <span aria-hidden="true">&#8250;&#124;</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="board-and-list">
+          <div class="board-frame">
+            <div class="chessboard" id="board" aria-label="Chess board"></div>
+            <div class="board-caption" id="boardCaption">Starting position</div>
+          </div>
+          <div class="move-list-wrap">
+            <div class="section-title">Moves</div>
+            <div class="move-list" id="moveList" aria-label="Parsed move list"></div>
+          </div>
+        </div>
+
+        <div class="analysis-strip">
+          <div>
+            <span class="metric-label">Position</span>
+            <strong id="positionMetric">Start</strong>
+          </div>
+          <div>
+            <span class="metric-label">Played</span>
+            <strong id="playedMetric">-</strong>
+          </div>
+          <div>
+            <span class="metric-label">Eval</span>
+            <strong id="evalMetric">-</strong>
+          </div>
+        </div>
+
+        <div class="alternatives-panel">
+          <div class="section-title">Better Alternatives</div>
+          <div class="alternative-list" id="alternativeList"></div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
