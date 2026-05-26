@@ -1350,6 +1350,8 @@ async function analyzeGame() {
 function buildAlternatives(move, lines, playedScore) {
   const turn = move.beforeFen.split(" ")[1];
   const playedMoverScore = scoreForMover(playedScore, turn);
+  if (playedMoverScore == null) return [];
+
   const ranked = lines
     .filter((line) => line.uci && line.uci !== move.uci)
     .map((line) => ({
@@ -1357,14 +1359,9 @@ function buildAlternatives(move, lines, playedScore) {
       san: uciToSan(move.beforeFen, line.uci),
       moverScore: scoreForMover(line.scoreWhite, turn),
     }))
-    .filter((line) => line.san);
+    .filter((line) => line.san && line.moverScore != null && line.moverScore > playedMoverScore);
 
-  const better = ranked.filter((line) => {
-    if (playedMoverScore == null || line.moverScore == null) return true;
-    return line.moverScore > playedMoverScore + 0.03;
-  });
-
-  return better.slice(0, 3);
+  return ranked.slice(0, 3);
 }
 
 function scoreForMover(scoreWhite, turn) {
