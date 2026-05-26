@@ -139,6 +139,7 @@ const els = {
   canvas: document.querySelector("#preprocessCanvas"),
   pgnText: document.querySelector("#pgnText"),
   skipHighlights: document.querySelector("#skipHighlights"),
+  cleanupButton: document.querySelector("#cleanupButton"),
   pasteButton: document.querySelector("#pasteButton"),
   depthInput: document.querySelector("#depthInput"),
   depthValue: document.querySelector("#depthValue"),
@@ -168,6 +169,7 @@ wireEvents();
 
 function wireEvents() {
   els.imageInput.addEventListener("change", onImageSelected);
+  els.cleanupButton.addEventListener("click", cleanupTranscriptText);
   els.pasteButton.addEventListener("click", pasteClipboardText);
   els.pgnText.addEventListener("input", clearSkippedTokenHighlights);
   els.pgnText.addEventListener("scroll", syncSkippedTokenHighlights);
@@ -182,6 +184,31 @@ function wireEvents() {
   els.prevButton.addEventListener("click", () => goToPly(Math.max(0, state.currentPly - 1)));
   els.nextButton.addEventListener("click", () => goToPly(Math.min(state.moves.length, state.currentPly + 1)));
   els.toEndButton.addEventListener("click", () => goToPly(state.moves.length));
+}
+
+function cleanupTranscriptText() {
+  const marker = "1. ";
+  const markerIndex = els.pgnText.value.indexOf(marker);
+
+  if (markerIndex === -1) {
+    setLog(`Could not find "${marker}" in Move Text.`);
+    return;
+  }
+
+  if (markerIndex === 0) {
+    const parsed = parseCurrentText({ updateLog: false });
+    setLog(`Move Text already starts with ${marker.trim()}. Parsed ${parsed.moves.length} moves.`);
+    return;
+  }
+
+  els.pgnText.value = els.pgnText.value.slice(markerIndex);
+  const parsed = parseCurrentText({ updateLog: false });
+
+  if (parsed.moves.length) {
+    setLog(`Cleaned transcript. Parsed ${parsed.moves.length} moves.`);
+  } else {
+    setLog("Cleaned transcript, but no legal moves parsed yet.");
+  }
 }
 
 async function pasteClipboardText() {
@@ -1703,6 +1730,7 @@ function updateNavButtons() {
 }
 
 function setBusy(isBusy, label = "") {
+  els.cleanupButton.disabled = isBusy;
   els.pasteButton.disabled = isBusy;
   els.analyzeButton.disabled = isBusy;
   els.parseButton.disabled = isBusy;

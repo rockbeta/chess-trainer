@@ -246,6 +246,13 @@ textarea:focus-visible {
   margin: 0;
 }
 
+.field-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .transcript-editor {
   position: relative;
   overflow: hidden;
