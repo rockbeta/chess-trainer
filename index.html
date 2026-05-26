@@ -41,12 +41,18 @@
           <canvas id="preprocessCanvas" hidden></canvas>
         </div>
 
-        <label class="field-label" for="pgnText">Move Text</label>
-        <textarea
-          id="pgnText"
-          spellcheck="false"
-          placeholder="Paste or OCR the game moves here, for example: 1. d4 c6 2. Nf3 d5 ..."
-        ></textarea>
+        <div class="field-heading">
+          <label class="field-label" for="pgnText">Move Text</label>
+          <button class="secondary-button compact-button" id="pasteButton" type="button">Paste Clipboard</button>
+        </div>
+        <div class="transcript-editor">
+          <div class="skip-highlight-layer" id="skipHighlights" aria-hidden="true"></div>
+          <textarea
+            id="pgnText"
+            spellcheck="false"
+            placeholder="Paste or OCR the game moves here, for example: 1. d4 c6 2. Nf3 d5 ..."
+          ></textarea>
+        </div>
 
         <div class="settings-grid">
           <label class="setting">

@@ -138,6 +138,8 @@ const els = {
   previewWrap: document.querySelector("#previewWrap"),
   canvas: document.querySelector("#preprocessCanvas"),
   pgnText: document.querySelector("#pgnText"),
+  skipHighlights: document.querySelector("#skipHighlights"),
+  pasteButton: document.querySelector("#pasteButton"),
   depthInput: document.querySelector("#depthInput"),
   depthValue: document.querySelector("#depthValue"),
   maxPliesInput: document.querySelector("#maxPliesInput"),
@@ -166,6 +168,9 @@ wireEvents();
 
 function wireEvents() {
   els.imageInput.addEventListener("change", onImageSelected);
+  els.pasteButton.addEventListener("click", pasteClipboardText);
+  els.pgnText.addEventListener("input", clearSkippedTokenHighlights);
+  els.pgnText.addEventListener("scroll", syncSkippedTokenHighlights);
   els.analyzeButton.addEventListener("click", analyzeGame);
   els.parseButton.addEventListener("click", parseCurrentText);
 
@@ -177,6 +182,40 @@ function wireEvents() {
   els.prevButton.addEventListener("click", () => goToPly(Math.max(0, state.currentPly - 1)));
   els.nextButton.addEventListener("click", () => goToPly(Math.min(state.moves.length, state.currentPly + 1)));
   els.toEndButton.addEventListener("click", () => goToPly(state.moves.length));
+}
+
+async function pasteClipboardText() {
+  if (!navigator.clipboard?.readText) {
+    els.pgnText.focus();
+    setLog("Clipboard read is unavailable here. Paste into Move Text manually.");
+    return;
+  }
+
+  els.pasteButton.disabled = true;
+  setLog("Reading clipboard...");
+
+  try {
+    const text = await navigator.clipboard.readText();
+    const transcript = text.trim();
+
+    if (!transcript) {
+      setLog("Clipboard is empty.");
+      return;
+    }
+
+    els.pgnText.value = transcript;
+    const parsed = parseCurrentText({ updateLog: false });
+
+    if (parsed.moves.length) {
+      setLog(`Pasted clipboard transcript. Parsed ${parsed.moves.length} moves.`);
+    } else {
+      setLog("Pasted clipboard text, but no legal moves parsed yet.");
+    }
+  } catch (error) {
+    setLog(`Could not read clipboard: ${error.message}`);
+  } finally {
+    els.pasteButton.disabled = false;
+  }
 }
 
 function onImageSelected(event) {
@@ -500,6 +539,7 @@ function beginOcrRun() {
 function clearParseErrors() {
   els.parseErrors.hidden = true;
   els.parseErrors.textContent = "";
+  clearSkippedTokenHighlights();
 }
 
 function ocrSummary(best, results) {
@@ -701,6 +741,7 @@ function parseCurrentText({ updateLog = true } = {}) {
   renderMoveList();
   goToPly(state.currentPly);
   renderParseErrors();
+  renderSkippedTokenHighlights(state.errors);
 
   if (updateLog) {
     if (state.moves.length) {
@@ -1574,6 +1615,89 @@ function renderParseErrors() {
   els.parseErrors.textContent = `Skipped ${state.errors.length} token(s): ${preview}${more}. You can edit the move text and parse again.`;
 }
 
+function renderSkippedTokenHighlights(errors) {
+  if (!errors.length) {
+    clearSkippedTokenHighlights();
+    return;
+  }
+
+  const text = els.pgnText.value;
+  const ranges = skippedTokenRanges(text, errors);
+
+  if (!ranges.length) {
+    clearSkippedTokenHighlights();
+    return;
+  }
+
+  let html = "";
+  let cursor = 0;
+
+  for (const range of ranges) {
+    html += escapeHtml(text.slice(cursor, range.start));
+    html += `<mark>${escapeHtml(text.slice(range.start, range.end))}</mark>`;
+    cursor = range.end;
+  }
+
+  html += escapeHtml(text.slice(cursor));
+  els.skipHighlights.innerHTML = html.replace(/\n$/g, "\n ");
+  syncSkippedTokenHighlights();
+}
+
+function clearSkippedTokenHighlights() {
+  els.skipHighlights.innerHTML = "";
+}
+
+function syncSkippedTokenHighlights() {
+  els.skipHighlights.scrollTop = els.pgnText.scrollTop;
+  els.skipHighlights.scrollLeft = els.pgnText.scrollLeft;
+}
+
+function skippedTokenRanges(text, errors) {
+  const ranges = [];
+  let cursor = 0;
+
+  for (const error of errors) {
+    const match = findSkippedTokenRange(text, error.token, cursor);
+    if (!match) continue;
+
+    const previous = ranges[ranges.length - 1];
+    if (previous && match.start < previous.end) continue;
+
+    ranges.push(match);
+    cursor = match.end;
+  }
+
+  return ranges;
+}
+
+function findSkippedTokenRange(text, token, cursor) {
+  const candidates = skippedTokenCandidates(token);
+
+  for (const candidate of candidates) {
+    const directIndex = text.indexOf(candidate, cursor);
+    if (directIndex !== -1) return { start: directIndex, end: directIndex + candidate.length };
+  }
+
+  const lowerText = text.toLowerCase();
+  for (const candidate of candidates) {
+    const lowerCandidate = candidate.toLowerCase();
+    const index = lowerText.indexOf(lowerCandidate, cursor);
+    if (index !== -1) return { start: index, end: index + candidate.length };
+  }
+
+  return null;
+}
+
+function skippedTokenCandidates(token) {
+  const candidates = new Set([token]);
+  candidates.add(token.replace(/O/g, "0"));
+  candidates.add(token.replace(/0/g, "O"));
+  candidates.add(token.replace(/1/g, "I"));
+  candidates.add(token.replace(/1/g, "l"));
+  candidates.add(token.replace(/I/g, "1").replace(/l/g, "1"));
+  return [...candidates].filter(Boolean).sort((left, right) => right.length - left.length);
+}
+
 function updateNavButtons() {
   els.toStartButton.disabled = state.currentPly === 0;
   els.prevButton.disabled = state.currentPly === 0;
@@ -1582,6 +1706,7 @@ function updateNavButtons() {
 }
 
 function setBusy(isBusy, label = "") {
+  els.pasteButton.disabled = isBusy;
   els.analyzeButton.disabled = isBusy;
   els.parseButton.disabled = isBusy;
   if (label) setEngineStatus(label, isBusy);

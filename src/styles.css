@@ -177,6 +177,11 @@ textarea:focus-visible {
   font-weight: 700;
 }
 
+.compact-button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
 .ghost-button {
   min-height: 34px;
   color: var(--accent-dark);
@@ -228,21 +233,59 @@ textarea:focus-visible {
   object-fit: contain;
 }
 
-.field-label {
-  display: block;
+.field-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-top: 18px;
+  margin-bottom: 6px;
+}
+
+.field-heading .field-label {
+  margin: 0;
+}
+
+.transcript-editor {
+  position: relative;
+  overflow: hidden;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.skip-highlight-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  padding: 12px;
+  border: 1px solid transparent;
+  color: transparent;
+  font: inherit;
+  line-height: 1.45;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.skip-highlight-layer mark {
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--warn) 38%, transparent);
+  color: transparent;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 55%, transparent);
 }
 
 #pgnText {
+  position: relative;
   width: 100%;
   min-height: 210px;
   resize: vertical;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: #ffffff;
+  background: transparent;
   color: var(--ink);
   line-height: 1.45;
+  overflow-wrap: break-word;
 }
 
 .settings-grid {
