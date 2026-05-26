@@ -70,6 +70,12 @@ const PIECE_DIGIT_SWAPS = new Map([
   ["d", "4"],
 ]);
 
+const PARSE_BEAM_WIDTH = 18;
+const PARSE_MAX_TOKEN_GROUP = 3;
+const PARSE_MOVE_REWARD = 7;
+const PARSE_SKIP_PENALTY = 4;
+const PARSE_GROUP_PENALTY = 0.22;
+
 const SAMPLE_MOVES = `1. d4 c6 2. Nf3 d5 3. e3 e6 4. Bd3 c5 5. dxc5 Bxc5 6. Nbd2 Nc6 7. c3 Nge7 8. O-O Bd7 9. e4 O-O 10. exd5 Nxd5 11. Re1 Nf4 12. Bb1 Qg5 13. g3 Nh3+ 14. Kg2 Qh5 15. Qc2 Bxf2 16. Rf1 Be3 17. Ne4 Bxc1 18. Qxc1 Ne7 19. Nf2 Nxf2 20. Rxf2 Bc6 21. Kg1 Bxf3 22. Qe3 Bc6 23. Bd3 Rae8 24. Be2 Qd5 25. Bf3 Qb5 26. Qxa7 Bxf3 27. Rxf3 Qxb2 28. Raf1 Nd5 29. Qd4 Rc8 30. c4 Nf6 31. a4 Qxd4+`;
 
 const PIECES = {
@@ -128,18 +134,15 @@ const state = {
 const els = {
   engineStatus: document.querySelector("#engineStatus"),
   imageInput: document.querySelector("#imageInput"),
-  ocrButton: document.querySelector("#ocrButton"),
   imagePreview: document.querySelector("#imagePreview"),
   previewWrap: document.querySelector("#previewWrap"),
   canvas: document.querySelector("#preprocessCanvas"),
   pgnText: document.querySelector("#pgnText"),
-  ocrEngineSelect: document.querySelector("#ocrEngineSelect"),
   depthInput: document.querySelector("#depthInput"),
   depthValue: document.querySelector("#depthValue"),
   maxPliesInput: document.querySelector("#maxPliesInput"),
   analyzeButton: document.querySelector("#analyzeButton"),
   parseButton: document.querySelector("#parseButton"),
-  sampleButton: document.querySelector("#sampleButton"),
   progressFill: document.querySelector("#progressFill"),
   logLine: document.querySelector("#logLine"),
   parseErrors: document.querySelector("#parseErrors"),
@@ -163,18 +166,8 @@ wireEvents();
 
 function wireEvents() {
   els.imageInput.addEventListener("change", onImageSelected);
-  els.ocrButton.addEventListener("click", runOcr);
   els.analyzeButton.addEventListener("click", analyzeGame);
   els.parseButton.addEventListener("click", parseCurrentText);
-  els.sampleButton.addEventListener("click", () => {
-    els.pgnText.value = SAMPLE_MOVES;
-    parseCurrentText();
-  });
-
-  els.ocrEngineSelect.addEventListener("change", () => {
-    clearParseErrors();
-    setLog(`OCR engine set to ${selectedOcrEngineLabel()}. Run OCR to retry this image.`);
-  });
 
   els.depthInput.addEventListener("input", () => {
     els.depthValue.value = els.depthInput.value;
@@ -189,7 +182,6 @@ function wireEvents() {
 function onImageSelected(event) {
   const [file] = event.target.files || [];
   state.imageFile = file || null;
-  els.ocrButton.disabled = !state.imageFile;
 
   if (!state.imageFile) {
     els.previewWrap.classList.remove("has-image");
@@ -200,7 +192,8 @@ function onImageSelected(event) {
   els.imagePreview.src = URL.createObjectURL(state.imageFile);
   els.previewWrap.classList.add("has-image");
   clearParseErrors();
-  setLog("Image ready. Run OCR when you want to extract the moves.");
+  setLog("Image ready. Running OCR automatically...");
+  runOcr();
 }
 
 async function runOcr() {
@@ -211,7 +204,7 @@ async function runOcr() {
 
   try {
     const results = [];
-    const engine = els.ocrEngineSelect.value;
+    const engine = "auto";
 
     if (engine === "paddle" || engine === "auto") {
       try {
@@ -496,16 +489,12 @@ function formatParsedMoves(moves) {
   return pairs.join(" ");
 }
 
-function selectedOcrEngineLabel() {
-  return els.ocrEngineSelect.selectedOptions[0]?.textContent || "selected engine";
-}
-
 function beginOcrRun() {
   state.errors = [];
   state.analysis.clear();
   clearParseErrors();
   renderAnalysis();
-  setLog(`Running OCR with ${selectedOcrEngineLabel()}.`);
+  setLog(`Running OCR with Best of both.`);
 }
 
 function clearParseErrors() {
@@ -727,52 +716,123 @@ function parseCurrentText({ updateLog = true } = {}) {
 function parseMoves(rawText) {
   const tokens = tokenizeMoves(cleanMoveText(rawText));
   const chess = new Chess();
-  const moves = [];
-  const errors = [];
+  let beam = [
+    {
+      index: 0,
+      fen: chess.fen(),
+      moves: [],
+      errors: [],
+      cost: 0,
+      skippedInRow: 0,
+    },
+  ];
 
-  for (let index = 0; index < tokens.length; index += 1) {
+  for (let step = 0; step < tokens.length; step += 1) {
+    const expanded = [];
+
+    for (const state of beam) {
+      expanded.push(...advanceParseState(state, tokens));
+    }
+
+    beam = pruneParseBeam(expanded);
+    if (beam.every((state) => state.index >= tokens.length)) break;
+  }
+
+  const best = pickBestParseState(beam);
+  return { moves: best.moves, errors: best.errors };
+}
+
+function advanceParseState(state, tokens) {
+  if (state.index >= tokens.length) return [state];
+
+  const states = [];
+  const maxGroupLength = Math.min(PARSE_MAX_TOKEN_GROUP, tokens.length - state.index);
+
+  for (let length = 1; length <= maxGroupLength; length += 1) {
+    const tokenGroup = tokens.slice(state.index, state.index + length);
+    const rawToken = tokenGroup.join("");
+    const chess = new Chess(state.fen);
     const beforeFen = chess.fen();
-    let move = null;
-    let usedToken = tokens[index];
+    const resolved = resolveMoveToken(chess, rawToken);
 
-    const tokenGroups = [
-      [tokens[index]],
-      [tokens[index], tokens[index + 1]],
-      [tokens[index], tokens[index + 1], tokens[index + 2]],
-    ].filter((group) => group.every(Boolean));
+    if (!resolved.move) continue;
 
-    for (const group of tokenGroups) {
-      const rawToken = group.join("");
-      const resolved = resolveMoveToken(chess, rawToken);
-      if (resolved.move) {
-        move = resolved.move;
-        usedToken = resolved.usedToken;
-        index += group.length - 1;
-        break;
-      }
-    }
-
-    if (!move) {
-      errors.push({ token: tokens[index], fen: beforeFen });
-      continue;
-    }
-
-    moves.push({
-      ply: moves.length + 1,
-      number: Math.ceil((moves.length + 1) / 2),
-      side: move.color,
-      beforeFen,
-      afterFen: chess.fen(),
-      san: move.san,
-      input: usedToken,
-      uci: moveToUci(move),
-      from: move.from,
-      to: move.to,
-      promotion: move.promotion || "",
+    const move = resolved.move;
+    const afterFen = chess.fen();
+    const groupPenalty = (length - 1) * PARSE_GROUP_PENALTY;
+    states.push({
+      index: state.index + length,
+      fen: afterFen,
+      moves: [
+        ...state.moves,
+        parsedMoveFromResolved(move, beforeFen, afterFen, state.moves.length + 1, resolved.usedToken),
+      ],
+      errors: state.errors,
+      cost: state.cost + resolved.cost + groupPenalty - PARSE_MOVE_REWARD,
+      skippedInRow: 0,
     });
   }
 
-  return { moves, errors };
+  states.push({
+    ...state,
+    index: state.index + 1,
+    errors: [...state.errors, { token: tokens[state.index], fen: state.fen }],
+    cost: state.cost + skipTokenCost(tokens[state.index], state.skippedInRow),
+    skippedInRow: state.skippedInRow + 1,
+  });
+
+  return states;
+}
+
+function parsedMoveFromResolved(move, beforeFen, afterFen, ply, usedToken) {
+  return {
+    ply,
+    number: Math.ceil(ply / 2),
+    side: move.color,
+    beforeFen,
+    afterFen,
+    san: move.san,
+    input: usedToken,
+    uci: moveToUci(move),
+    from: move.from,
+    to: move.to,
+    promotion: move.promotion || "",
+  };
+}
+
+function skipTokenCost(token, skippedInRow) {
+  const repeatedSkipPenalty = Math.min(1.5, skippedInRow * 0.35);
+  if (/^\d{1,3}$/.test(token)) return 1.4 + repeatedSkipPenalty;
+  if (/^[A-Z][a-z]{3,}$/.test(token)) return 2.1 + repeatedSkipPenalty;
+  return PARSE_SKIP_PENALTY + repeatedSkipPenalty;
+}
+
+function pruneParseBeam(states) {
+  const bestByPosition = new Map();
+
+  for (const state of states) {
+    const key = `${state.index}|${state.fen}`;
+    const existing = bestByPosition.get(key);
+    if (!existing || compareParseStates(state, existing) < 0) {
+      bestByPosition.set(key, state);
+    }
+  }
+
+  return [...bestByPosition.values()].sort(compareParseStates).slice(0, PARSE_BEAM_WIDTH);
+}
+
+function pickBestParseState(states) {
+  return [...states].sort(compareParseStates)[0] || {
+    moves: [],
+    errors: [],
+  };
+}
+
+function compareParseStates(left, right) {
+  if (left.cost !== right.cost) return left.cost - right.cost;
+  if (left.moves.length !== right.moves.length) return right.moves.length - left.moves.length;
+  if (left.errors.length !== right.errors.length) return left.errors.length - right.errors.length;
+  return right.index - left.index;
 }
 
 function cleanMoveText(input) {
@@ -858,9 +918,13 @@ function resolveMoveToken(chess, token) {
 
   for (const candidate of candidates) {
     try {
+      const move = chess.move(candidate, { strict: false });
+      if (!move) continue;
+
       return {
-        move: chess.move(candidate, { strict: false }),
+        move,
         usedToken: candidate,
+        cost: resolvedMoveCost(token, repaired, candidate, move.san),
       };
     } catch {
       // Keep trying chess-specific repairs below.
@@ -873,10 +937,26 @@ function resolveMoveToken(chess, token) {
     return { move: null, usedToken: repaired };
   }
 
+  const move = chess.move(fuzzy.move.san, { strict: false });
+  if (!move) {
+    return { move: null, usedToken: repaired };
+  }
+
   return {
-    move: chess.move(fuzzy.san, { strict: false }),
-    usedToken: fuzzy.san,
+    move,
+    usedToken: fuzzy.move.san,
+    cost: fuzzy.distance + 0.35,
   };
+}
+
+function resolvedMoveCost(original, repaired, candidate, san) {
+  const candidateCost = bestMoveDistance(moveForms(repaired), moveForms(candidate));
+  const sanCost = bestMoveDistance(moveForms(repaired), moveForms(san));
+  const repairCost = original === repaired
+    ? 0
+    : Math.min(0.35, bestMoveDistance(moveForms(original), moveForms(repaired)) * 0.2);
+
+  return Math.min(1.5, Math.min(candidateCost, sanCost) + repairCost);
 }
 
 function repairMoveToken(token) {
@@ -1048,7 +1128,11 @@ function findClosestLegalMove(token, legalMoves) {
   const clearMargin = !nextDifferent || nextDifferent.distance - best.distance >= 0.18;
 
   if (best.distance <= limit && clearMargin) {
-    return best.move;
+    return {
+      move: best.move,
+      distance: best.distance,
+      margin: nextDifferent ? nextDifferent.distance - best.distance : Infinity,
+    };
   }
 
   return null;
@@ -1498,11 +1582,8 @@ function updateNavButtons() {
 }
 
 function setBusy(isBusy, label = "") {
-  els.ocrButton.disabled = isBusy || !state.imageFile;
   els.analyzeButton.disabled = isBusy;
   els.parseButton.disabled = isBusy;
-  els.sampleButton.disabled = isBusy;
-  els.ocrEngineSelect.disabled = isBusy;
   if (label) setEngineStatus(label, isBusy);
 }
 

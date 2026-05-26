@@ -29,13 +29,11 @@
             <p class="eyebrow">Input</p>
             <h2 id="inputTitle">Screenshot To Moves</h2>
           </div>
-          <button class="ghost-button" id="sampleButton" type="button">Sample</button>
         </div>
 
         <div class="upload-row">
           <input id="imageInput" type="file" accept="image/*" />
           <label class="primary-button" for="imageInput">Choose Image</label>
-          <button class="secondary-button" id="ocrButton" type="button" disabled>Run OCR</button>
         </div>
 
         <div class="preview-wrap" id="previewWrap">
@@ -55,14 +53,6 @@
             <span>Depth</span>
             <input id="depthInput" type="range" min="6" max="14" value="10" />
             <output id="depthValue">10</output>
-          </label>
-          <label class="setting compact-setting">
-            <span>OCR Engine</span>
-            <select id="ocrEngineSelect">
-              <option value="paddle" selected>PaddleOCR neural</option>
-              <option value="auto">Best of both</option>
-              <option value="tesseract">Tesseract only</option>
-            </select>
           </label>
           <label class="setting compact-setting">
             <span>Max Moves</span>
