@@ -135,6 +135,28 @@ textarea:focus-visible {
   margin-bottom: 18px;
 }
 
+.board-toolbar {
+  flex-wrap: wrap;
+}
+
+.play-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.play-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
 .upload-row,
 .action-row {
   flex-wrap: wrap;
@@ -417,6 +439,31 @@ textarea:focus-visible {
   box-shadow: inset 0 0 0 4px rgba(255, 230, 101, 0.62);
 }
 
+.chessboard.is-play-mode .square {
+  cursor: pointer;
+}
+
+.square.selected-square {
+  box-shadow: inset 0 0 0 4px rgba(34, 94, 232, 0.65);
+}
+
+.square.legal-target::after {
+  position: absolute;
+  z-index: 2;
+  width: 28%;
+  height: 28%;
+  border-radius: 999px;
+  background: rgba(34, 94, 232, 0.42);
+  content: "";
+}
+
+.square.legal-target.occupied-square::after {
+  width: 84%;
+  height: 84%;
+  border: 4px solid rgba(34, 94, 232, 0.42);
+  background: transparent;
+}
+
 .arrow-layer {
   position: absolute;
   inset: 0;
@@ -461,18 +508,22 @@ textarea:focus-visible {
 }
 
 .arrow-label {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  max-width: 38px;
-  height: 7px;
-  padding: 0 1.6px;
+  justify-content: center;
+  width: max-content;
+  min-width: 11px;
+  max-width: 21px;
+  height: 5.3px;
+  margin: 0 auto;
+  padding: 0 1.15px;
   overflow: hidden;
-  border: 0.35px solid rgba(255, 255, 255, 0.72);
-  border-radius: 2px;
-  background: rgba(28, 31, 30, 0.86);
-  box-shadow: 0 0.7px 2px rgba(0, 0, 0, 0.25);
+  border: 0.25px solid rgba(255, 255, 255, 0.78);
+  border-radius: 1.6px;
+  background: rgba(28, 31, 30, 0.82);
+  box-shadow: 0 0.55px 1.5px rgba(0, 0, 0, 0.22);
   color: #ffffff;
-  font-size: 3.2px;
+  font-size: 2.35px;
   font-weight: 800;
   line-height: 1;
   text-overflow: ellipsis;

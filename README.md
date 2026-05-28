@@ -37,7 +37,7 @@ The page is static. It loads OCR and move parsing libraries from public CDNs, an
 - PaddleOCR.js for neural OCR
 - Tesseract.js for OCR
 - chess.js for legal move parsing
-- stockfish.js WASM build for engine analysis
+- nmrugg Stockfish.js 18 WASM build for engine analysis
 
 ## Notes
 

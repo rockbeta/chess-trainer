@@ -1,9 +1,9 @@
 import { Chess } from "https://cdn.jsdelivr.net/npm/chess.js@1.4.0/+esm";
 
 const STOCKFISH_SCRIPT =
-  new URL("../vendor/stockfish/stockfish.wasm.js", import.meta.url);
+  new URL("../vendor/stockfish/stockfish-18-lite-single.js", import.meta.url);
 const STOCKFISH_FALLBACK_SCRIPT =
-  new URL("../vendor/stockfish/stockfish.js", import.meta.url);
+  new URL("../vendor/stockfish/stockfish-18-asm.js", import.meta.url);
 const PADDLE_OCR_MODULE = "https://cdn.jsdelivr.net/npm/@paddleocr/paddleocr-js/+esm";
 const ONNX_RUNTIME_WASM_PATH = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
 const OCR_WHITELIST = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZxXOolI-=+#. ";
@@ -86,27 +86,26 @@ const ARROW_STYLES = {
     className: "played-arrow",
     markerId: "arrow-head-played",
     color: "#2454a6",
-    label: "",
   },
   alt1: {
     className: "alt-arrow alt-arrow-1",
     markerId: "arrow-head-alt-1",
     color: "#14795c",
-    label: "1",
   },
   alt2: {
     className: "alt-arrow alt-arrow-2",
     markerId: "arrow-head-alt-2",
     color: "#8a5a12",
-    label: "2",
   },
   alt3: {
     className: "alt-arrow alt-arrow-3",
     markerId: "arrow-head-alt-3",
     color: "#8b3f6d",
-    label: "3",
   },
 };
+
+const ARROW_LABEL_WIDTH = 21;
+const ARROW_LABEL_HEIGHT = 6.2;
 
 const state = {
   imageFile: null,
@@ -116,7 +115,11 @@ const state = {
   analysis: new Map(),
   engine: null,
   paddleOcr: null,
+  busy: false,
   analyzing: false,
+  playMode: false,
+  selectedSquare: null,
+  playAnalysisTimer: null,
 };
 
 const els = {
@@ -140,6 +143,7 @@ const els = {
   board: document.querySelector("#board"),
   boardCaption: document.querySelector("#boardCaption"),
   moveList: document.querySelector("#moveList"),
+  playModeToggle: document.querySelector("#playModeToggle"),
   toStartButton: document.querySelector("#toStartButton"),
   prevButton: document.querySelector("#prevButton"),
   nextButton: document.querySelector("#nextButton"),
@@ -163,6 +167,8 @@ function wireEvents() {
   els.pgnText.addEventListener("scroll", syncSkippedTokenHighlights);
   els.analyzeButton.addEventListener("click", analyzeGame);
   els.parseButton.addEventListener("click", parseCurrentText);
+  els.board.addEventListener("click", onBoardClick);
+  els.playModeToggle.addEventListener("change", onPlayModeToggle);
 
   els.depthInput.addEventListener("input", () => {
     els.depthValue.value = els.depthInput.value;
@@ -196,6 +202,114 @@ function cleanupTranscriptText() {
     setLog(`Cleaned transcript. Parsed ${parsed.moves.length} moves.`);
   } else {
     setLog("Cleaned transcript, but no legal moves parsed yet.");
+  }
+}
+
+function onPlayModeToggle(event) {
+  state.playMode = event.target.checked;
+  state.selectedSquare = null;
+  clearPendingPlayAnalysis();
+  els.board.classList.toggle("is-play-mode", state.playMode);
+  renderBoard(chessAtPly(state.currentPly));
+  setLog(state.playMode ? "Play Mode on. Select a legal piece to move." : "Play Mode off.");
+}
+
+function onBoardClick(event) {
+  if (!state.playMode) return;
+  if (state.busy || state.playAnalysisTimer || state.analyzing) {
+    setLog("Play Mode: wait for the current task to finish.");
+    return;
+  }
+
+  const squareEl = event.target.closest("[data-square]");
+  if (!squareEl || !els.board.contains(squareEl)) return;
+
+  const square = squareEl.dataset.square;
+  const chess = chessAtPly(state.currentPly);
+  const piece = chess.get(square);
+
+  if (!state.selectedSquare) {
+    selectPlayableSquare(chess, square, piece);
+    return;
+  }
+
+  if (state.selectedSquare === square) {
+    state.selectedSquare = null;
+    renderBoard(chess);
+    return;
+  }
+
+  if (piece?.color === chess.turn()) {
+    selectPlayableSquare(chess, square, piece);
+    return;
+  }
+
+  commitPlayableMove(chess, state.selectedSquare, square);
+}
+
+function selectPlayableSquare(chess, square, piece) {
+  if (!piece || piece.color !== chess.turn()) {
+    const side = chess.turn() === "w" ? "white" : "black";
+    setLog(`Play Mode: select a ${side} piece to move.`);
+    return;
+  }
+
+  if (!legalTargetsForSquare(chess, square).size) {
+    setLog("Play Mode: that piece has no legal moves.");
+    return;
+  }
+
+  state.selectedSquare = square;
+  renderBoard(chess);
+}
+
+function commitPlayableMove(chess, from, to) {
+  const beforeFen = chess.fen();
+  const candidate = { from, to };
+  if (isPromotionMove(chess, from, to)) candidate.promotion = "q";
+
+  let move = null;
+  try {
+    move = chess.move(candidate);
+  } catch {
+    move = null;
+  }
+
+  if (!move) {
+    setLog("Illegal move. Choose a highlighted legal square.");
+    return;
+  }
+
+  const nextPly = state.currentPly + 1;
+  state.moves = state.moves.slice(0, state.currentPly);
+  removeAnalysisFromPly(nextPly);
+  state.moves.push(parsedMoveFromResolved(move, beforeFen, chess.fen(), nextPly, move.san));
+  state.errors = [];
+  state.currentPly = nextPly;
+  state.selectedSquare = null;
+  els.pgnText.value = formatParsedMoves(state.moves);
+  clearParseErrors();
+
+  renderBoard(chess);
+  renderMoveList();
+  renderAnalysis();
+  updateNavButtons();
+  schedulePlayMoveAnalysis(state.moves[state.moves.length - 1]);
+}
+
+function isPromotionMove(chess, from, to) {
+  const piece = chess.get(from);
+  if (piece?.type !== "p") return false;
+  return (piece.color === "w" && to[1] === "8") || (piece.color === "b" && to[1] === "1");
+}
+
+function legalTargetsForSquare(chess, square) {
+  return new Set(chess.moves({ square, verbose: true }).map((move) => move.to));
+}
+
+function removeAnalysisFromPly(startPly) {
+  for (const ply of state.analysis.keys()) {
+    if (ply >= startPly) state.analysis.delete(ply);
   }
 }
 
@@ -750,6 +864,7 @@ function parseCurrentText({ updateLog = true } = {}) {
   const result = parseMoves(els.pgnText.value);
   state.moves = result.moves;
   state.errors = result.errors;
+  state.selectedSquare = null;
   state.analysis.clear();
   state.currentPly = Math.min(state.currentPly, state.moves.length);
 
@@ -1283,6 +1398,7 @@ function deletionCost(char) {
 
 async function analyzeGame() {
   if (state.analyzing) return;
+  clearPendingPlayAnalysis();
 
   const parsed = parseCurrentText();
   if (!parsed.moves.length) return;
@@ -1293,10 +1409,7 @@ async function analyzeGame() {
   setProgress(0);
 
   try {
-    if (!state.engine) {
-      state.engine = new StockfishClient();
-      await state.engine.init();
-    }
+    await ensureEngineReady();
 
     const depth = Number(els.depthInput.value);
     const maxPlies = Math.min(Number(els.maxPliesInput.value) || parsed.moves.length, parsed.moves.length);
@@ -1307,40 +1420,7 @@ async function analyzeGame() {
       setEngineStatus(`Analyzing ${index + 1}/${maxPlies}`, true);
       setProgress(Math.round((index / maxPlies) * 100));
 
-      const before = await state.engine.analyze(move.beforeFen, {
-        depth,
-        multipv: 4,
-      });
-      const candidateLines = before.lines.length >= 4
-        ? before.lines
-        : await state.engine.analyzeTopMoves(move.beforeFen, {
-            depth: Math.max(5, depth - 1),
-            count: 4,
-          });
-
-      let playedLine = candidateLines.find((line) => line.uci === move.uci);
-      let playedScore = playedLine?.scoreWhite ?? null;
-      let playedDisplay = playedLine?.displayScore ?? null;
-
-      if (!playedLine) {
-        const after = await state.engine.analyze(move.afterFen, {
-          depth: Math.max(6, depth - 2),
-          multipv: 1,
-        });
-        const bestAfter = after.lines[0];
-        if (bestAfter) {
-          playedScore = bestAfter.scoreWhite;
-          playedDisplay = bestAfter.displayScore;
-        }
-      }
-
-      const alternatives = buildAlternatives(move, candidateLines, playedScore);
-      state.analysis.set(move.ply, {
-        playedScore,
-        playedDisplay,
-        bestLine: candidateLines[0] || null,
-        alternatives,
-      });
+      state.analysis.set(move.ply, await analyzeSingleMove(move, depth));
 
       if (state.currentPly === move.ply) {
         renderBoard(chessAtPly(state.currentPly));
@@ -1362,6 +1442,102 @@ async function analyzeGame() {
   }
 }
 
+async function ensureEngineReady() {
+  if (!state.engine) {
+    state.engine = new StockfishClient();
+    await state.engine.init();
+  }
+}
+
+async function analyzeSingleMove(move, depth) {
+  const turn = move.beforeFen.split(" ")[1];
+  const before = await state.engine.analyze(move.beforeFen, {
+    depth,
+    multipv: 4,
+  });
+  const candidateLines = before.lines.length >= 4
+    ? before.lines
+    : await state.engine.analyzeTopMoves(move.beforeFen, {
+        depth: Math.max(5, depth - 1),
+        count: 4,
+      });
+
+  const playedLine = candidateLines.find((line) => line.uci === move.uci);
+  let playedScore = playedLine?.scoreWhite ?? null;
+
+  if (!playedLine) {
+    const after = await state.engine.analyze(move.afterFen, {
+      depth: Math.max(6, depth - 2),
+      multipv: 1,
+    });
+    const bestAfter = after.lines[0];
+    if (bestAfter) {
+      playedScore = bestAfter.scoreWhite;
+    }
+  }
+
+  return {
+    playedScore,
+    playedDisplay: formatScoreForTurn(playedScore, turn),
+    bestLine: candidateLines[0] || null,
+    alternatives: buildAlternatives(move, candidateLines, playedScore),
+  };
+}
+
+function schedulePlayMoveAnalysis(move) {
+  clearPendingPlayAnalysis();
+  setBusy(true, "Engine pending");
+  setProgress(0);
+  setLog(`Played ${move.san}. Engine will score it in 2 seconds.`);
+
+  state.playAnalysisTimer = window.setTimeout(() => {
+    state.playAnalysisTimer = null;
+    analyzePlayedMove(move);
+  }, 2000);
+}
+
+function clearPendingPlayAnalysis() {
+  if (!state.playAnalysisTimer) return;
+  window.clearTimeout(state.playAnalysisTimer);
+  state.playAnalysisTimer = null;
+  setBusy(false);
+}
+
+async function analyzePlayedMove(move) {
+  if (state.analyzing) return;
+  const currentMove = state.moves[move.ply - 1];
+  if (!currentMove || currentMove.uci !== move.uci || currentMove.beforeFen !== move.beforeFen) {
+    setBusy(false);
+    return;
+  }
+
+  state.analyzing = true;
+  setBusy(true, "Engine running");
+  setEngineStatus("Scoring move", true);
+  setProgress(0);
+
+  try {
+    await ensureEngineReady();
+    const depth = Number(els.depthInput.value);
+    state.analysis.set(move.ply, await analyzeSingleMove(move, depth));
+    setProgress(100);
+    setLog(`Engine scored ${move.san}.`);
+    setEngineStatus("Engine ready", false);
+
+    if (state.currentPly === move.ply) {
+      renderBoard(chessAtPly(state.currentPly));
+      renderAnalysis();
+    }
+    renderMoveList();
+  } catch (error) {
+    setLog(`Analysis failed: ${error.message}`);
+    setEngineStatus("Engine error", false);
+  } finally {
+    setBusy(false);
+    state.analyzing = false;
+  }
+}
+
 function buildAlternatives(move, lines, playedScore) {
   const turn = move.beforeFen.split(" ")[1];
   const playedMoverScore = scoreForMover(playedScore, turn);
@@ -1373,8 +1549,10 @@ function buildAlternatives(move, lines, playedScore) {
       ...line,
       san: uciToSan(move.beforeFen, line.uci),
       moverScore: scoreForMover(line.scoreWhite, turn),
+      displayScore: formatScoreForTurn(line.scoreWhite, turn),
     }))
-    .filter((line) => line.san && line.moverScore != null && line.moverScore > playedMoverScore);
+    .filter((line) => line.san && line.moverScore != null && line.moverScore > playedMoverScore)
+    .sort((a, b) => b.moverScore - a.moverScore || a.multipv - b.multipv);
 
   return ranked.slice(0, 3);
 }
@@ -1384,7 +1562,18 @@ function scoreForMover(scoreWhite, turn) {
   return turn === "w" ? scoreWhite : -scoreWhite;
 }
 
+function formatScoreForTurn(scoreWhite, turn) {
+  const score = scoreForMover(scoreWhite, turn);
+  if (score == null) return "-";
+  if (Math.abs(scoreWhite) > 900) {
+    const mateDistance = Math.max(1, Math.round(1000 - Math.abs(scoreWhite)));
+    return `${score > 0 ? "+" : "-"}M${mateDistance}`;
+  }
+  return formatCp(score);
+}
+
 function goToPly(ply) {
+  state.selectedSquare = null;
   state.currentPly = Math.max(0, Math.min(ply, state.moves.length));
   const chess = chessAtPly(state.currentPly);
   renderBoard(chess);
@@ -1406,6 +1595,9 @@ function chessAtPly(ply) {
 function renderBoard(chess) {
   const board = chess.board();
   const lastMove = state.currentPly > 0 ? state.moves[state.currentPly - 1] : null;
+  const legalTargets = state.playMode && state.selectedSquare
+    ? legalTargetsForSquare(chess, state.selectedSquare)
+    : new Set();
   const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
   const fragments = [];
 
@@ -1415,10 +1607,13 @@ function renderBoard(chess) {
       const piece = board[rankIndex][fileIndex];
       const color = (rankIndex + fileIndex) % 2 === 0 ? "light" : "dark";
       const lastClass = lastMove && (lastMove.from === squareName || lastMove.to === squareName) ? " last-move" : "";
+      const selectedClass = state.playMode && state.selectedSquare === squareName ? " selected-square" : "";
+      const targetClass = state.playMode && legalTargets.has(squareName) ? " legal-target" : "";
+      const occupiedClass = piece ? " occupied-square" : "";
       const rankLabel = fileIndex === 0 ? `<span class="coord rank">${8 - rankIndex}</span>` : "";
       const fileLabel = rankIndex === 7 ? `<span class="coord file">${files[fileIndex]}</span>` : "";
       fragments.push(
-        `<div class="square ${color}${lastClass}" data-square="${squareName}">${rankLabel}${fileLabel}${renderPiece(piece)}</div>`
+        `<div class="square ${color}${lastClass}${selectedClass}${targetClass}${occupiedClass}" data-square="${squareName}">${rankLabel}${fileLabel}${renderPiece(piece)}</div>`
       );
     }
   }
@@ -1449,7 +1644,7 @@ function renderArrowLayer(move) {
     {
       from: move.from,
       to: move.to,
-      text: `${move.san} ${analysis.playedDisplay || "-"}`,
+      text: analysis.playedDisplay || "-",
       style: ARROW_STYLES.played,
       index: 0,
     },
@@ -1458,7 +1653,7 @@ function renderArrowLayer(move) {
       return {
         from: parts.from,
         to: parts.to,
-        text: `${line.san} ${line.displayScore}`,
+        text: line.displayScore,
         style: ARROW_STYLES[`alt${index + 1}`],
         index: index + 1,
       };
@@ -1501,8 +1696,8 @@ function renderArrow(arrow) {
     x: to.x - unitX * 4.6,
     y: to.y - unitY * 4.6,
   };
-  const labelPoint = labelPosition(from, to, arrow.index);
-  const label = arrow.style.label ? `${arrow.style.label} ${arrow.text}` : arrow.text;
+  const labelPoint = arrowLabelPosition(start);
+  const label = arrow.text;
 
   return `
     <g class="board-arrow ${arrow.style.className}">
@@ -1517,8 +1712,8 @@ function renderArrow(arrow) {
         class="arrow-label-wrap"
         x="${labelPoint.x.toFixed(2)}"
         y="${labelPoint.y.toFixed(2)}"
-        width="38"
-        height="8"
+        width="${ARROW_LABEL_WIDTH}"
+        height="${ARROW_LABEL_HEIGHT}"
       >
         <div xmlns="http://www.w3.org/1999/xhtml" class="arrow-label">${escapeHtml(label)}</div>
       </foreignObject>
@@ -1535,16 +1730,9 @@ function squareCenter(square) {
   };
 }
 
-function labelPosition(from, to, index) {
-  const offsets = [
-    { x: -17, y: -9 },
-    { x: -17, y: 1 },
-    { x: -17, y: 9 },
-    { x: -17, y: -17 },
-  ];
-  const offset = offsets[index] || offsets[0];
-  const x = clamp((from.x + to.x) / 2 + offset.x, 1, 61);
-  const y = clamp((from.y + to.y) / 2 + offset.y, 1, 91);
+function arrowLabelPosition(point) {
+  const x = clamp(point.x - ARROW_LABEL_WIDTH / 2, 0.5, 99.5 - ARROW_LABEL_WIDTH);
+  const y = clamp(point.y - ARROW_LABEL_HEIGHT / 2, 0.5, 99.5 - ARROW_LABEL_HEIGHT);
   return { x, y };
 }
 
@@ -1723,8 +1911,10 @@ function updateNavButtons() {
 }
 
 function setBusy(isBusy, label = "") {
+  state.busy = isBusy;
   els.cleanupButton.disabled = isBusy;
   els.pasteButton.disabled = isBusy;
+  els.playModeToggle.disabled = isBusy;
   els.analyzeButton.disabled = isBusy;
   els.parseButton.disabled = isBusy;
   if (label) setEngineStatus(label, isBusy);
