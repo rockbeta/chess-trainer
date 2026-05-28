@@ -78,20 +78,8 @@ const PARSE_GROUP_PENALTY = 0.22;
 
 const SAMPLE_MOVES = `1. d4 c6 2. Nf3 d5 3. e3 e6 4. Bd3 c5 5. dxc5 Bxc5 6. Nbd2 Nc6 7. c3 Nge7 8. O-O Bd7 9. e4 O-O 10. exd5 Nxd5 11. Re1 Nf4 12. Bb1 Qg5 13. g3 Nh3+ 14. Kg2 Qh5 15. Qc2 Bxf2 16. Rf1 Be3 17. Ne4 Bxc1 18. Qxc1 Ne7 19. Nf2 Nxf2 20. Rxf2 Bc6 21. Kg1 Bxf3 22. Qe3 Bc6 23. Bd3 Rae8 24. Be2 Qd5 25. Bf3 Qb5 26. Qxa7 Bxf3 27. Rxf3 Qxb2 28. Raf1 Nd5 29. Qd4 Rc8 30. c4 Nf6 31. a4 Qxd4+`;
 
-const PIECES = {
-  wk: "\u2654",
-  wq: "\u2655",
-  wr: "\u2656",
-  wb: "\u2657",
-  wn: "\u2658",
-  wp: "\u2659",
-  bk: "\u265A",
-  bq: "\u265B",
-  br: "\u265C",
-  bb: "\u265D",
-  bn: "\u265E",
-  bp: "\u265F",
-};
+const LICHESS_PIECE_BASE =
+  "https://cdn.jsdelivr.net/gh/lichess-org/lila@master/public/piece/cburnett";
 
 const ARROW_STYLES = {
   played: {
@@ -1429,9 +1417,8 @@ function renderBoard(chess) {
       const lastClass = lastMove && (lastMove.from === squareName || lastMove.to === squareName) ? " last-move" : "";
       const rankLabel = fileIndex === 0 ? `<span class="coord rank">${8 - rankIndex}</span>` : "";
       const fileLabel = rankIndex === 7 ? `<span class="coord file">${files[fileIndex]}</span>` : "";
-      const pieceText = piece ? PIECES[`${piece.color}${piece.type}`] : "";
       fragments.push(
-        `<div class="square ${color}${lastClass}" data-square="${squareName}">${rankLabel}${fileLabel}<span aria-hidden="true">${pieceText}</span></div>`
+        `<div class="square ${color}${lastClass}" data-square="${squareName}">${rankLabel}${fileLabel}${renderPiece(piece)}</div>`
       );
     }
   }
@@ -1444,6 +1431,12 @@ function renderBoard(chess) {
     const move = state.moves[state.currentPly - 1];
     els.boardCaption.textContent = `${move.number}${move.side === "b" ? "..." : "."} ${move.san}`;
   }
+}
+
+function renderPiece(piece) {
+  if (!piece) return "";
+  const code = `${piece.color}${piece.type.toUpperCase()}`;
+  return `<img class="piece" src="${LICHESS_PIECE_BASE}/${code}.svg" alt="" aria-hidden="true" draggable="false" />`;
 }
 
 function renderArrowLayer(move) {

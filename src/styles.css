@@ -393,9 +393,16 @@ textarea:focus-visible {
   justify-content: center;
   aspect-ratio: 1 / 1;
   color: #161b1e;
-  font-size: clamp(1.55rem, 5vw, 3.15rem);
   line-height: 1;
   user-select: none;
+}
+
+.piece {
+  width: 86%;
+  height: 86%;
+  object-fit: contain;
+  pointer-events: none;
+  filter: drop-shadow(0 2px 0 rgba(0, 0, 0, 0.16));
 }
 
 .square.light {
