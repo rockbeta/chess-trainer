@@ -45,4 +45,4 @@ OCR is intentionally editable before analysis. Chess notation is compact, and sc
 
 PaddleOCR neural OCR may download model assets on the first run. If that fails or is too slow, choose `Tesseract only` in the OCR Engine menu.
 
-Depth 8-10 is a practical browser default. Higher depth is more accurate, but it can be slow on laptops and mobile browsers.
+Depth 18 is the browser default, with the slider adjustable up to 24. Higher depth is more accurate, but it can be slow on laptops and mobile browsers.

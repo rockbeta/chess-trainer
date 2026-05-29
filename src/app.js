@@ -1665,7 +1665,7 @@ function renderArrowLayer(move) {
   const defs = Object.values(ARROW_STYLES)
     .map(
       (style) => `
-        <marker id="${style.markerId}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
+        <marker id="${style.markerId}" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
           <path d="M 0 0 L 10 5 L 0 10 z" fill="${style.color}"></path>
         </marker>
       `
@@ -1683,19 +1683,8 @@ function renderArrowLayer(move) {
 function renderArrow(arrow) {
   const from = squareCenter(arrow.from);
   const to = squareCenter(arrow.to);
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const length = Math.hypot(dx, dy) || 1;
-  const unitX = dx / length;
-  const unitY = dy / length;
-  const start = {
-    x: from.x + unitX * 3.2,
-    y: from.y + unitY * 3.2,
-  };
-  const end = {
-    x: to.x - unitX * 4.6,
-    y: to.y - unitY * 4.6,
-  };
+  const start = from;
+  const end = to;
   const labelPoint = arrowLabelPosition(start);
   const label = arrow.text;
 
